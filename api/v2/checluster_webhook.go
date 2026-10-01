@@ -231,6 +231,13 @@ func (r *CheClusterValidator) validateOAuthSecret(secretName string, scmProvider
 		return fmt.Errorf("error reading '%s' secret", err.Error())
 	}
 
+	if scmProvider == constants.ForgejoOAuth {
+		// validate before patching, so a rejected secret is not labelled and then mounted by the operator
+		if err := r.validateForgejoOAuthSecret(secret); err != nil {
+			return err
+		}
+	}
+
 	if err := r.ensureScmLabelsAndAnnotations(secret, scmProvider, serverEndpoint, disableSubdomainIsolation); err != nil {
 		return err
 	}
@@ -250,10 +257,6 @@ func (r *CheClusterValidator) validateOAuthSecret(secretName string, scmProvider
 		}
 	case constants.AzureDevOpsOAuth:
 		if err := r.validateAzureDevOpsSecretDataKeys(secret); err != nil {
-			return err
-		}
-	case constants.ForgejoOAuth:
-		if err := r.validateForgejoOAuthSecret(secret); err != nil {
 			return err
 		}
 	}
