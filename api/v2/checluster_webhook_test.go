@@ -388,6 +388,8 @@ func TestValidateForgejoScmSecrets(t *testing.T) {
 			map[string]string{constants.CheEclipseOrgScmServerEndpoint: "https://forgejo.example.com"},
 			validData)
 
+		defer deleteSecret("forgejo-valid")
+
 		warnings, err := cheClusterValidator.ValidateUpdate(context.TODO(), nil, newCheCluster("forgejo-valid"))
 		assert.NoError(t, err)
 		assert.Empty(t, warnings)
@@ -401,6 +403,9 @@ func TestValidateForgejoScmSecrets(t *testing.T) {
 	})
 
 	t.Run("more than two secrets", func(t *testing.T) {
+		createSecret("forgejo-valid-1",
+			map[string]string{constants.CheEclipseOrgScmServerEndpoint: "https://forgejo-1.example.com"},
+			validData)
 		createSecret("forgejo-valid-2",
 			map[string]string{constants.CheEclipseOrgScmServerEndpoint: "https://forgejo-2.example.com"},
 			validData)
@@ -408,13 +413,17 @@ func TestValidateForgejoScmSecrets(t *testing.T) {
 			map[string]string{constants.CheEclipseOrgScmServerEndpoint: "https://forgejo-3.example.com"},
 			validData)
 
-		warnings, err := cheClusterValidator.ValidateUpdate(context.TODO(), nil, newCheCluster("forgejo-valid", "forgejo-valid-2"))
+		defer deleteSecret("forgejo-valid-1")
+		defer deleteSecret("forgejo-valid-2")
+		defer deleteSecret("forgejo-valid-3")
+
+		warnings, err := cheClusterValidator.ValidateUpdate(context.TODO(), nil, newCheCluster("forgejo-valid-1", "forgejo-valid-2"))
 		assert.NoError(t, err)
 		assert.Empty(t, warnings)
 
-		warnings, err = cheClusterValidator.ValidateUpdate(context.TODO(), nil, newCheCluster("forgejo-valid", "forgejo-valid-2", "forgejo-valid-3"))
+		warnings, err = cheClusterValidator.ValidateUpdate(context.TODO(), nil, newCheCluster("forgejo-valid-1", "forgejo-valid-2", "forgejo-valid-3"))
 		assert.NoError(t, err)
-		assert.Equal(t, []string{"3 Forgejo OAuth secrets found, only the first 2 (sorted by 'che.eclipse.org/scm-server-endpoint' annotation) are used"}, []string(warnings))
+		assert.Equal(t, []string{"3 Forgejo OAuth secrets found, che-server only reads the first 2 (sorted by 'che.eclipse.org/scm-server-endpoint' annotation)"}, []string(warnings))
 	})
 }
 

@@ -211,7 +211,7 @@ func (r *CheClusterValidator) forgejoWarnings(checluster *CheCluster) admission.
 
 	if count > constants.ForgejoMaxOAuthConfigs {
 		return admission.Warnings{
-			fmt.Sprintf("%d Forgejo OAuth secrets found, only the first %d (sorted by '%s' annotation) are used", count, constants.ForgejoMaxOAuthConfigs, constants.CheEclipseOrgScmServerEndpoint),
+			fmt.Sprintf("%d Forgejo OAuth secrets found, che-server only reads the first %d (sorted by '%s' annotation)", count, constants.ForgejoMaxOAuthConfigs, constants.CheEclipseOrgScmServerEndpoint),
 		}
 	}
 	return nil
