@@ -418,6 +418,50 @@ func TestValidateForgejoScmSecrets(t *testing.T) {
 	})
 }
 
+func TestValidateForgejoScmSecretMissingEndpointIsNotLabelled(t *testing.T) {
+	k8sHelper := k8shelper.GetInstance()
+	namespace := "eclipse-che-forgejo-not-labelled"
+	secretName := "forgejo-missing-endpoint-not-labelled"
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      secretName,
+		},
+		Data: map[string][]byte{
+			"id":     []byte("id"),
+			"secret": []byte("secret"),
+		},
+	}
+	_, err := k8sHelper.GetClientSet().CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+	assert.NoError(t, err)
+	defer func() {
+		err := k8sHelper.GetClientSet().CoreV1().Secrets(namespace).Delete(context.TODO(), secretName, metav1.DeleteOptions{})
+		assert.NoError(t, err)
+	}()
+
+	checluster := &CheCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "eclipse-che",
+			Namespace: namespace,
+		},
+		Spec: CheClusterSpec{
+			GitServices: CheClusterGitServices{
+				Forgejo: []ForgejoService{{SecretName: secretName}},
+			},
+		},
+	}
+
+	_, err = (&CheClusterValidator{}).ValidateUpdate(context.TODO(), nil, checluster)
+	assert.Error(t, err)
+	assert.Equal(t, "annotation 'che.eclipse.org/scm-server-endpoint' not found in secret "+secretName, err.Error())
+
+	secret, err = k8sHelper.GetClientSet().CoreV1().Secrets(namespace).Get(context.TODO(), secretName, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Empty(t, secret.Labels)
+	assert.Empty(t, secret.Annotations)
+}
+
 func TestForgejoWarningsWhenSecretsCannotBeListed(t *testing.T) {
 	clientSet := k8shelper.GetInstance().GetClientSet().(*fake.Clientset)
 	reactionChain := clientSet.ReactionChain

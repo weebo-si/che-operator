@@ -370,6 +370,20 @@ func MountForgejoOAuthConfig(ctx *chetypes.DeployContext, deployment *appsv1.Dep
 		return err
 	}
 
+	// Skip secrets without endpoint: che-server disables a Forgejo provider without endpoint,
+	// and such a secret would otherwise take the unsuffixed slot as it sorts first.
+	secretsWithEndpoint := make([]corev1.Secret, 0, len(secrets))
+	for _, secret := range secrets {
+		if secret.Annotations[constants.CheEclipseOrgScmServerEndpoint] == "" {
+			log.Info("Skipping Forgejo OAuth secret without endpoint annotation",
+				"secret", secret.Name,
+				"annotation", constants.CheEclipseOrgScmServerEndpoint)
+			continue
+		}
+		secretsWithEndpoint = append(secretsWithEndpoint, secret)
+	}
+	secrets = secretsWithEndpoint
+
 	sort.Slice(secrets, func(i, j int) bool {
 		return strings.Compare(secrets[i].Annotations[constants.CheEclipseOrgScmServerEndpoint], secrets[j].Annotations[constants.CheEclipseOrgScmServerEndpoint]) < 0
 	})
