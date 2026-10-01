@@ -13,6 +13,7 @@
 package server
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -387,6 +388,11 @@ func MountForgejoOAuthConfig(cheCtx *chetypes.CheContext, deployment *appsv1.Dep
 	sort.Slice(secrets, func(i, j int) bool {
 		return strings.Compare(secrets[i].Annotations[constants.CheEclipseOrgScmServerEndpoint], secrets[j].Annotations[constants.CheEclipseOrgScmServerEndpoint]) < 0
 	})
+
+	if len(secrets) > constants.ForgejoMaxOAuthConfigs {
+		log.Info(fmt.Sprintf("%d Forgejo OAuth secrets found, che-server only reads the first %d (sorted by '%s' annotation)",
+			len(secrets), constants.ForgejoMaxOAuthConfigs, constants.CheEclipseOrgScmServerEndpoint))
+	}
 
 	for i := 0; i < len(secrets); i++ {
 		secret := secrets[i]
