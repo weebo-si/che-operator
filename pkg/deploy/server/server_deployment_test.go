@@ -581,3 +581,116 @@ func TestMountGitLabOAuthEnvVar(t *testing.T) {
 		},
 		test.FindVolumeMount(container.VolumeMounts, "gitlab-oauth-config_2"))
 }
+
+func TestMountForgejoOAuthEnvVar(t *testing.T) {
+	newForgejoSecret := func(name string, endpoint string) *corev1.Secret {
+		return &corev1.Secret{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Secret",
+				APIVersion: "v1",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "eclipse-che",
+				Labels: map[string]string{
+					"app.kubernetes.io/part-of":   "che.eclipse.org",
+					"app.kubernetes.io/component": "oauth-scm-configuration",
+				},
+				Annotations: map[string]string{
+					"che.eclipse.org/oauth-scm-server":    "forgejo",
+					"che.eclipse.org/scm-server-endpoint": endpoint,
+				},
+			},
+			Data: map[string][]byte{
+				"id":     []byte("some_id"),
+				"secret": []byte("some_secret"),
+			},
+		}
+	}
+
+	t.Run("no secret", func(t *testing.T) {
+		ctx := test.NewCtxBuilder().Build()
+
+		server := NewCheServerReconciler()
+		deployment, err := server.getDeploymentSpec(ctx)
+		assert.Nil(t, err, "Unexpected error %v", err)
+
+		container := &deployment.Spec.Template.Spec.Containers[0]
+		for _, env := range container.Env {
+			assert.NotContains(t, env.Name, "FORGEJO")
+		}
+		for _, volumeMount := range container.VolumeMounts {
+			assert.NotContains(t, volumeMount.MountPath, "/che-conf/oauth/forgejo")
+		}
+	})
+
+	t.Run("one secret", func(t *testing.T) {
+		ctx := test.NewCtxBuilder().WithObjects(newForgejoSecret("forgejo-oauth-config", "https://forgejo.example.com")).Build()
+
+		server := NewCheServerReconciler()
+		deployment, err := server.getDeploymentSpec(ctx)
+		assert.Nil(t, err, "Unexpected error %v", err)
+
+		container := &deployment.Spec.Template.Spec.Containers[0]
+
+		assert.Equal(t, "/che-conf/oauth/forgejo/id", utils.GetEnvByName("CHE_OAUTH2_FORGEJO_CLIENTID__FILEPATH", container.Env))
+		assert.Equal(t, "/che-conf/oauth/forgejo/secret", utils.GetEnvByName("CHE_OAUTH2_FORGEJO_CLIENTSECRET__FILEPATH", container.Env))
+		assert.Equal(t, "https://forgejo.example.com", utils.GetEnvByName("CHE_INTEGRATION_FORGEJO_OAUTH__ENDPOINT", container.Env))
+		assert.Empty(t, utils.GetEnvByName("CHE_OAUTH2_FORGEJO_CLIENTID__FILEPATH__2", container.Env))
+		assert.Empty(t, utils.GetEnvByName("CHE_INTEGRATION_FORGEJO_OAUTH__ENDPOINT__2", container.Env))
+
+		assert.Equal(t,
+			corev1.Volume{
+				Name: "forgejo-oauth-config",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: "forgejo-oauth-config",
+					},
+				},
+			},
+			test.FindVolume(deployment.Spec.Template.Spec.Volumes, "forgejo-oauth-config"))
+
+		assert.Equal(t,
+			corev1.VolumeMount{
+				Name:      "forgejo-oauth-config",
+				MountPath: "/che-conf/oauth/forgejo",
+			},
+			test.FindVolumeMount(container.VolumeMounts, "forgejo-oauth-config"))
+	})
+
+	t.Run("two secrets sorted by endpoint", func(t *testing.T) {
+		ctx := test.NewCtxBuilder().
+			WithObjects(newForgejoSecret("forgejo-oauth-config-b", "https://forgejo-b.example.com")).
+			WithObjects(newForgejoSecret("forgejo-oauth-config-a", "https://forgejo-a.example.com")).
+			Build()
+
+		server := NewCheServerReconciler()
+		deployment, err := server.getDeploymentSpec(ctx)
+		assert.Nil(t, err, "Unexpected error %v", err)
+
+		container := &deployment.Spec.Template.Spec.Containers[0]
+
+		assert.Equal(t, "/che-conf/oauth/forgejo/id", utils.GetEnvByName("CHE_OAUTH2_FORGEJO_CLIENTID__FILEPATH", container.Env))
+		assert.Equal(t, "/che-conf/oauth/forgejo__2/id", utils.GetEnvByName("CHE_OAUTH2_FORGEJO_CLIENTID__FILEPATH__2", container.Env))
+
+		assert.Equal(t, "/che-conf/oauth/forgejo/secret", utils.GetEnvByName("CHE_OAUTH2_FORGEJO_CLIENTSECRET__FILEPATH", container.Env))
+		assert.Equal(t, "/che-conf/oauth/forgejo__2/secret", utils.GetEnvByName("CHE_OAUTH2_FORGEJO_CLIENTSECRET__FILEPATH__2", container.Env))
+
+		assert.Equal(t, "https://forgejo-a.example.com", utils.GetEnvByName("CHE_INTEGRATION_FORGEJO_OAUTH__ENDPOINT", container.Env))
+		assert.Equal(t, "https://forgejo-b.example.com", utils.GetEnvByName("CHE_INTEGRATION_FORGEJO_OAUTH__ENDPOINT__2", container.Env))
+
+		assert.Equal(t,
+			corev1.VolumeMount{
+				Name:      "forgejo-oauth-config-a",
+				MountPath: "/che-conf/oauth/forgejo",
+			},
+			test.FindVolumeMount(container.VolumeMounts, "forgejo-oauth-config-a"))
+
+		assert.Equal(t,
+			corev1.VolumeMount{
+				Name:      "forgejo-oauth-config-b",
+				MountPath: "/che-conf/oauth/forgejo__2",
+			},
+			test.FindVolumeMount(container.VolumeMounts, "forgejo-oauth-config-b"))
+	})
+}
