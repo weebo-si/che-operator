@@ -202,6 +202,19 @@ spec:
             path: gitServices.bitbucket[0].secretName
             x-descriptors:
               - urn:alm:descriptor:io.kubernetes:Secret
+          - description: Enables users to work with repositories hosted on Forgejo
+              (codeberg.org or self-hosted).
+            displayName: Forgejo
+            path: gitServices.forgejo
+          - description: 'Kubernetes secret, that contains Base64-encoded Forgejo
+              OAuth2 Application Client id and Client secret.
+
+              The secret must be annotated with `che.eclipse.org/scm-server-endpoint`
+              set to the Forgejo server URL.'
+            displayName: Secret Name
+            path: gitServices.forgejo[0].secretName
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes:Secret
           - description: Enables users to work with repositories hosted on GitHub
               (github.com or GitHub Enterprise).
             displayName: GitHub

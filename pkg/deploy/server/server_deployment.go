@@ -189,6 +189,11 @@ func (s CheServerReconciler) getDeploymentSpec(ctx *chetypes.DeployContext) (*ap
 		return nil, err
 	}
 
+	err = MountForgejoOAuthConfig(ctx, deployment)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := MountAzureDevOpsOAuthConfig(ctx, deployment); err != nil {
 		return nil, err
 	}
@@ -349,6 +354,37 @@ func MountGitLabOAuthConfig(ctx *chetypes.DeployContext, deployment *appsv1.Depl
 		oauthEndpoint := secret.Annotations[constants.CheEclipseOrgScmServerEndpoint]
 		if oauthEndpoint != "" {
 			mountEnv(deployment, "CHE_INTEGRATION_GITLAB_OAUTH__ENDPOINT"+suffix, oauthEndpoint)
+		}
+	}
+	return nil
+}
+
+func MountForgejoOAuthConfig(ctx *chetypes.DeployContext, deployment *appsv1.Deployment) error {
+	secrets, err := deploy.GetSecrets(ctx, map[string]string{
+		constants.KubernetesPartOfLabelKey:    constants.CheEclipseOrg,
+		constants.KubernetesComponentLabelKey: constants.OAuthScmConfiguration,
+	}, map[string]string{
+		constants.CheEclipseOrgOAuthScmServer: constants.ForgejoOAuth,
+	})
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(secrets, func(i, j int) bool {
+		return strings.Compare(secrets[i].Annotations[constants.CheEclipseOrgScmServerEndpoint], secrets[j].Annotations[constants.CheEclipseOrgScmServerEndpoint]) < 0
+	})
+
+	for i := 0; i < len(secrets); i++ {
+		secret := secrets[i]
+		suffix := map[bool]string{false: "__" + strconv.Itoa(i+1), true: ""}[i == 0]
+
+		mountVolumes(deployment, &secret, constants.ForgejoOAuthConfigMountPath+suffix)
+		mountEnv(deployment, "CHE_OAUTH2_FORGEJO_CLIENTID__FILEPATH"+suffix, constants.ForgejoOAuthConfigMountPath+suffix+"/"+constants.ForgejoOAuthConfigClientIdFileName)
+		mountEnv(deployment, "CHE_OAUTH2_FORGEJO_CLIENTSECRET__FILEPATH"+suffix, constants.ForgejoOAuthConfigMountPath+suffix+"/"+constants.ForgejoOAuthConfigClientSecretFileName)
+
+		oauthEndpoint := secret.Annotations[constants.CheEclipseOrgScmServerEndpoint]
+		if oauthEndpoint != "" {
+			mountEnv(deployment, "CHE_INTEGRATION_FORGEJO_OAUTH__ENDPOINT"+suffix, oauthEndpoint)
 		}
 	}
 	return nil
