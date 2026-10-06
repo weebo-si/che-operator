@@ -116,6 +116,11 @@ const (
 	GitLabOAuthConfigMountPath                 = "/che-conf/oauth/gitlab"
 	GitLabOAuthConfigClientIdFileName          = "id"
 	GitLabOAuthConfigClientSecretFileName      = "secret"
+	ForgejoOAuth                               = "forgejo"
+	ForgejoOAuthConfigMountPath                = "/che-conf/oauth/forgejo"
+	ForgejoOAuthConfigClientIdFileName         = "id"
+	ForgejoOAuthConfigClientSecretFileName     = "secret"
+	ForgejoMaxOAuthConfigs                     = 2
 	OAuthScmConfiguration                      = "oauth-scm-configuration"
 	AccessToken                                = "access_token"
 	IdToken                                    = "id_token"

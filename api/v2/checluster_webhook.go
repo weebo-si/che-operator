@@ -25,6 +25,7 @@ import (
 	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/json"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -108,14 +109,20 @@ func (r *CheClusterValidator) ValidateCreate(_ context.Context, cheCluster *CheC
 	if err := r.ensureSingletonCheCluster(); err != nil {
 		return []string{}, err
 	}
-	return []string{}, r.validate(cheCluster)
+	if err := r.validate(cheCluster); err != nil {
+		return []string{}, err
+	}
+	return r.forgejoWarnings(cheCluster), nil
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type CheCluster.
 func (r *CheClusterValidator) ValidateUpdate(_ context.Context, _, newObj *CheCluster) (admission.Warnings, error) {
 	webhookLogger.Info("Validation for CheCluster upon update", "name", newObj.GetName())
 
-	return nil, r.validate(newObj)
+	if err := r.validate(newObj); err != nil {
+		return nil, err
+	}
+	return r.forgejoWarnings(newObj), nil
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type CheCluster.
@@ -173,6 +180,40 @@ func (r *CheClusterValidator) validate(checluster *CheCluster) error {
 		}
 	}
 
+	for _, forgejo := range checluster.Spec.GitServices.Forgejo {
+		if err := r.validateOAuthSecret(forgejo.SecretName, constants.ForgejoOAuth, "", nil, checluster.Namespace); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// forgejoWarnings warns when more Forgejo OAuth secrets exist than che-server can use.
+func (r *CheClusterValidator) forgejoWarnings(checluster *CheCluster) admission.Warnings {
+	secrets, err := k8shelper.GetInstance().GetClientSet().CoreV1().Secrets(checluster.Namespace).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: labels.SelectorFromSet(map[string]string{
+			constants.KubernetesPartOfLabelKey:    constants.CheEclipseOrg,
+			constants.KubernetesComponentLabelKey: constants.OAuthScmConfiguration,
+		}).String(),
+	})
+	if err != nil {
+		webhookLogger.Error(err, "Failed to list SCM OAuth secrets.")
+		return nil
+	}
+
+	count := 0
+	for _, secret := range secrets.Items {
+		if secret.Annotations[constants.CheEclipseOrgOAuthScmServer] == constants.ForgejoOAuth {
+			count++
+		}
+	}
+
+	if count > constants.ForgejoMaxOAuthConfigs {
+		return admission.Warnings{
+			fmt.Sprintf("%d Forgejo OAuth secrets found, che-server only reads the first %d (sorted by '%s' annotation)", count, constants.ForgejoMaxOAuthConfigs, constants.CheEclipseOrgScmServerEndpoint),
+		}
+	}
 	return nil
 }
 
@@ -188,6 +229,13 @@ func (r *CheClusterValidator) validateOAuthSecret(secretName string, scmProvider
 			return fmt.Errorf("secret '%s' not found", secretName)
 		}
 		return fmt.Errorf("error reading '%s' secret", err.Error())
+	}
+
+	if scmProvider == constants.ForgejoOAuth {
+		// validate before patching, so a rejected secret is not labelled and then mounted by the operator
+		if err := r.validateForgejoOAuthSecret(secret); err != nil {
+			return err
+		}
 	}
 
 	if err := r.ensureScmLabelsAndAnnotations(secret, scmProvider, serverEndpoint, disableSubdomainIsolation); err != nil {
@@ -228,6 +276,15 @@ func (r *CheClusterValidator) validateGitHubOAuthSecretDataKeys(secret *corev1.S
 
 func (r *CheClusterValidator) validateGitLabOAuthSecretDataKeys(secret *corev1.Secret) error {
 	keys2validate := []string{constants.GitLabOAuthConfigClientIdFileName, constants.GitLabOAuthConfigClientSecretFileName}
+	return r.validateSecretDataKeys(secret, keys2validate)
+}
+
+func (r *CheClusterValidator) validateForgejoOAuthSecret(secret *corev1.Secret) error {
+	// Forgejo has no default public instance, the server endpoint is mandatory
+	if secret.Annotations[constants.CheEclipseOrgScmServerEndpoint] == "" {
+		return fmt.Errorf("annotation '%s' not found in secret %s", constants.CheEclipseOrgScmServerEndpoint, secret.Name)
+	}
+	keys2validate := []string{constants.ForgejoOAuthConfigClientIdFileName, constants.ForgejoOAuthConfigClientSecretFileName}
 	return r.validateSecretDataKeys(secret, keys2validate)
 }
 
