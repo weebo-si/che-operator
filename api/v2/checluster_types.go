@@ -1058,6 +1058,10 @@ type CheClusterGitServices struct {
 	// +optional
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Azure"
 	AzureDevOps []AzureDevOpsService `json:"azure,omitempty"`
+	// Enables users to work with repositories hosted on Forgejo (codeberg.org or self-hosted).
+	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Forgejo"
+	Forgejo []ForgejoService `json:"forgejo,omitempty"`
 }
 
 // GitHubService enables users to work with repositories hosted on GitHub (GitHub.com or GitHub Enterprise).
@@ -1112,6 +1116,15 @@ type BitBucketService struct {
 type AzureDevOpsService struct {
 	// Kubernetes secret, that contains Base64-encoded Azure DevOps Service Application ID and Client Secret.
 	// See the following page: https://www.eclipse.org/che/docs/stable/administration-guide/configuring-oauth-2-for-microsoft-azure-devops-services
+	// +kubebuilder:validation:Required
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors="urn:alm:descriptor:io.kubernetes:Secret"
+	SecretName string `json:"secretName"`
+}
+
+// ForgejoService enables users to work with repositories hosted on Forgejo (codeberg.org or self-hosted).
+type ForgejoService struct {
+	// Kubernetes secret, that contains Base64-encoded Forgejo OAuth2 Application Client id and Client secret.
+	// The secret must be annotated with `che.eclipse.org/scm-server-endpoint` set to the Forgejo server URL.
 	// +kubebuilder:validation:Required
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors="urn:alm:descriptor:io.kubernetes:Secret"
 	SecretName string `json:"secretName"`

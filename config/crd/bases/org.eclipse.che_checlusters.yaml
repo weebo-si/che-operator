@@ -25148,6 +25148,22 @@ spec:
                       - secretName
                       type: object
                     type: array
+                  forgejo:
+                    description: Enables users to work with repositories hosted on
+                      Forgejo (codeberg.org or self-hosted).
+                    items:
+                      description: ForgejoService enables users to work with repositories
+                        hosted on Forgejo (codeberg.org or self-hosted).
+                      properties:
+                        secretName:
+                          description: |-
+                            Kubernetes secret, that contains Base64-encoded Forgejo OAuth2 Application Client id and Client secret.
+                            The secret must be annotated with `che.eclipse.org/scm-server-endpoint` set to the Forgejo server URL.
+                          type: string
+                      required:
+                      - secretName
+                      type: object
+                    type: array
                   github:
                     description: Enables users to work with repositories hosted on
                       GitHub (github.com or GitHub Enterprise).

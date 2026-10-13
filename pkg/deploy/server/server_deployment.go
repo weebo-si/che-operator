@@ -13,6 +13,7 @@
 package server
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -189,6 +190,11 @@ func (s CheServerReconciler) getDeploymentSpec(cheCtx *chetypes.CheContext) (*ap
 		return nil, err
 	}
 
+	err = MountForgejoOAuthConfig(cheCtx, deployment)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := MountAzureDevOpsOAuthConfig(cheCtx, deployment); err != nil {
 		return nil, err
 	}
@@ -349,6 +355,56 @@ func MountGitLabOAuthConfig(cheCtx *chetypes.CheContext, deployment *appsv1.Depl
 		oauthEndpoint := secret.Annotations[constants.CheEclipseOrgScmServerEndpoint]
 		if oauthEndpoint != "" {
 			mountEnv(deployment, "CHE_INTEGRATION_GITLAB_OAUTH__ENDPOINT"+suffix, oauthEndpoint)
+		}
+	}
+	return nil
+}
+
+func MountForgejoOAuthConfig(cheCtx *chetypes.CheContext, deployment *appsv1.Deployment) error {
+	secrets, err := deploy.GetSecrets(cheCtx, map[string]string{
+		constants.KubernetesPartOfLabelKey:    constants.CheEclipseOrg,
+		constants.KubernetesComponentLabelKey: constants.OAuthScmConfiguration,
+	}, map[string]string{
+		constants.CheEclipseOrgOAuthScmServer: constants.ForgejoOAuth,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Skip secrets without endpoint: che-server disables a Forgejo provider without endpoint,
+	// and such a secret would otherwise take the unsuffixed slot as it sorts first.
+	secretsWithEndpoint := make([]corev1.Secret, 0, len(secrets))
+	for _, secret := range secrets {
+		if secret.Annotations[constants.CheEclipseOrgScmServerEndpoint] == "" {
+			log.Info("Skipping Forgejo OAuth secret without endpoint annotation",
+				"secret", secret.Name,
+				"annotation", constants.CheEclipseOrgScmServerEndpoint)
+			continue
+		}
+		secretsWithEndpoint = append(secretsWithEndpoint, secret)
+	}
+	secrets = secretsWithEndpoint
+
+	sort.Slice(secrets, func(i, j int) bool {
+		return strings.Compare(secrets[i].Annotations[constants.CheEclipseOrgScmServerEndpoint], secrets[j].Annotations[constants.CheEclipseOrgScmServerEndpoint]) < 0
+	})
+
+	if len(secrets) > constants.ForgejoMaxOAuthConfigs {
+		log.Info(fmt.Sprintf("%d Forgejo OAuth secrets found, che-server only reads the first %d (sorted by '%s' annotation)",
+			len(secrets), constants.ForgejoMaxOAuthConfigs, constants.CheEclipseOrgScmServerEndpoint))
+	}
+
+	for i := 0; i < len(secrets); i++ {
+		secret := secrets[i]
+		suffix := map[bool]string{false: "__" + strconv.Itoa(i+1), true: ""}[i == 0]
+
+		mountVolumes(deployment, &secret, constants.ForgejoOAuthConfigMountPath+suffix)
+		mountEnv(deployment, "CHE_OAUTH2_FORGEJO_CLIENTID__FILEPATH"+suffix, constants.ForgejoOAuthConfigMountPath+suffix+"/"+constants.ForgejoOAuthConfigClientIdFileName)
+		mountEnv(deployment, "CHE_OAUTH2_FORGEJO_CLIENTSECRET__FILEPATH"+suffix, constants.ForgejoOAuthConfigMountPath+suffix+"/"+constants.ForgejoOAuthConfigClientSecretFileName)
+
+		oauthEndpoint := secret.Annotations[constants.CheEclipseOrgScmServerEndpoint]
+		if oauthEndpoint != "" {
+			mountEnv(deployment, "CHE_INTEGRATION_FORGEJO_OAUTH__ENDPOINT"+suffix, oauthEndpoint)
 		}
 	}
 	return nil
