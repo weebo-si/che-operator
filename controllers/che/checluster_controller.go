@@ -18,11 +18,11 @@ import (
 	"time"
 
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
 	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
 	agentsandbox "github.com/eclipse-che/che-operator/pkg/deploy/agent-sandbox"
 	"github.com/eclipse-che/che-operator/pkg/deploy/metrics"
-	"github.com/eclipse-che/che-operator/pkg/deploy/networkpolicies"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
+	"github.com/eclipse-che/che-operator/pkg/reconciler/networkpolicy"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -109,10 +109,7 @@ func NewReconciler(
 	reconcilerManager.AddReconciler(tls.NewTlsSecretReconciler())
 	reconcilerManager.AddReconciler(devworkspace.NewDevWorkspaceConfigReconciler())
 	reconcilerManager.AddReconciler(rbac.NewGatewayPermissionsReconciler())
-
-	if infrastructure.IsOpenShift() {
-		reconcilerManager.AddReconciler(networkpolicies.NewNetworkPoliciesReconciler())
-	}
+	reconcilerManager.AddReconciler(&networkpolicy.NetworkPoliciesReconciler{})
 
 	// we have to expose che endpoint independently of syncing other server
 	// resources since che host is used for dashboard deployment and che config map
@@ -230,8 +227,8 @@ func (r *CheClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		NonCachingClient:        r.nonCachedClient,
 		DiscoveryClient:         r.discoveryClient,
 		Scheme:                  r.Scheme,
-		ClientWrapper:           k8sclient.NewK8sClient(r.client, r.Scheme),
-		NonCachingClientWrapper: k8sclient.NewK8sClient(r.nonCachedClient, r.Scheme),
+		ClientWrapper:           clientwrapper.New(r.client, r.Scheme),
+		NonCachingClientWrapper: clientwrapper.New(r.nonCachedClient, r.Scheme),
 	}
 
 	// Fetch the CheCluster instance

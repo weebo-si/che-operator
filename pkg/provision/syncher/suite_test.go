@@ -12,13 +12,11 @@
 
 //go:build integration
 
-package provision
+package syncher
 
 import (
 	"testing"
 
-	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
-	defaults "github.com/eclipse-che/che-operator/pkg/common/operator-defaults"
 	"github.com/eclipse-che/che-operator/pkg/common/test/envtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,17 +26,13 @@ import (
 
 var env *envtest.Env
 
-func TestProvision(t *testing.T) {
+func TestSyncher(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Provision")
+	RunSpecs(t, "Syncher")
 }
 
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
-
-	infrastructure.InitializeForTesting(infrastructure.Kubernetes)
-	defaults.InitializeForTesting()
-
 	env = envtest.Start()
 })
 

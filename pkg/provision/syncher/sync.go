@@ -10,7 +10,7 @@
 //   Red Hat, Inc. - initial API and implementation
 //
 
-package provision
+package syncher
 
 import (
 	"fmt"
@@ -18,17 +18,24 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/eclipse-che/che-operator/pkg/common/chelabels"
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
 	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
+
+// Package syncher provides low-level utilities for provisioning, synchronizing,
+// and cleaning up Kubernetes resources. It serves as a higher-level abstraction
+// layer in front of K8sClientWrapper, simplifying cluster interaction calls.
 
 // SyncObject ensures that the object is up to date in the cluster.
 // Besides the actual sync it:
@@ -49,7 +56,7 @@ func SyncObject(
 	suppressDiff bool,
 	allowForceRecreate bool) error {
 
-	var cw *k8sclient.K8sClientWrapper
+	var cw clientwrapper.ClientWrapper
 
 	if obj.GetLabels()[constants.KubernetesPartOfLabelKey] == constants.CheEclipseOrg {
 		cw = cheCtx.ClusterAPI.ClientWrapper
@@ -65,7 +72,7 @@ func SyncObject(
 		}
 	}
 
-	opts := &k8sclient.SyncOptions{
+	opts := &clientwrapper.SyncOptions{
 		MergeAnnotations: true,
 		MergeLabels:      true,
 		SuppressDiff:     suppressDiff,
@@ -94,6 +101,56 @@ func SyncObject(
 		}
 
 		return getSyncError(obj, err)
+	}
+
+	return nil
+}
+
+// DeleteObject ensures that the object is deleted in the cluster.
+func DeleteObject(
+	cheCtx *chetypes.CheContext,
+	name string,
+	namespace string,
+	obj client.Object,
+	opts ...client.DeleteOption,
+) error {
+	cw := cheCtx.ClusterAPI.ClientWrapper
+	key := types.NamespacedName{Name: name, Namespace: namespace}
+
+	if err := cw.DeleteByKeyIgnoreNotFound(cheCtx.Context, key, obj, opts...); err != nil {
+		return fmt.Errorf("failed to delete %s %s: %w", clientwrapper.GetObjectType(obj), key.String(), err)
+	}
+
+	return nil
+}
+
+// DeleteAllManaged ensures that all objects of the given type managed by the operator
+// for the specified component are deleted in the cluster.
+// If namespace is not empty, the deletion is scoped to that namespace.
+func DeleteAllManaged(
+	cheCtx *chetypes.CheContext,
+	namespace string,
+	obj client.Object,
+	component string,
+) error {
+	cw := cheCtx.ClusterAPI.ClientWrapper
+	cheLabels := chelabels.OperatorManaged(component)
+
+	opts := &client.DeleteAllOfOptions{
+		ListOptions: client.ListOptions{
+			LabelSelector: labels.SelectorFromSet(cheLabels),
+		},
+	}
+
+	if namespace != "" {
+		opts.Namespace = namespace
+	}
+
+	if err := cw.DeleteAllOf(cheCtx.Context, obj, opts); err != nil {
+		if namespace == "" {
+			return fmt.Errorf("failed to delete %s: %w", clientwrapper.GetObjectType(obj), err)
+		}
+		return fmt.Errorf("failed to delete %s in %s: %w", clientwrapper.GetObjectType(obj), namespace, err)
 	}
 
 	return nil
@@ -155,5 +212,5 @@ func isFieldImmutableError(err error) bool {
 }
 
 func getSyncError(obj client.Object, cause error) error {
-	return fmt.Errorf("failed to sync %s %s/%s: %w", k8sclient.GetObjectType(obj), obj.GetNamespace(), obj.GetName(), cause)
+	return fmt.Errorf("failed to sync %s %s/%s: %w", clientwrapper.GetObjectType(obj), obj.GetNamespace(), obj.GetName(), cause)
 }
