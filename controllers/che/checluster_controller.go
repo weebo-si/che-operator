@@ -14,17 +14,27 @@ package che
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/eclipse-che/che-operator/pkg/common/cheerrors"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
-	agentsandbox "github.com/eclipse-che/che-operator/pkg/deploy/agent-sandbox"
 	"github.com/eclipse-che/che-operator/pkg/deploy/metrics"
-	"github.com/eclipse-che/che-operator/pkg/deploy/networkpolicies"
+	"github.com/eclipse-che/che-operator/pkg/deploy/rbac"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
+	"github.com/eclipse-che/che-operator/pkg/reconciler/agentsandbox"
+	"github.com/eclipse-che/che-operator/pkg/reconciler/consolelink"
+	"github.com/eclipse-che/che-operator/pkg/reconciler/labelbackfill"
+	"github.com/eclipse-che/che-operator/pkg/reconciler/networkpolicy"
+	"github.com/eclipse-che/che-operator/pkg/reconciler/selfsignedcert"
+	"github.com/eclipse-che/che-operator/pkg/reconciler/specmigration"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -37,25 +47,21 @@ import (
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
-	"github.com/eclipse-che/che-operator/pkg/deploy"
-	"github.com/eclipse-che/che-operator/pkg/deploy/consolelink"
 	containerbuild "github.com/eclipse-che/che-operator/pkg/deploy/container-capabilities"
 	"github.com/eclipse-che/che-operator/pkg/deploy/dashboard"
 	"github.com/eclipse-che/che-operator/pkg/deploy/devfileregistry"
 	"github.com/eclipse-che/che-operator/pkg/deploy/gateway"
 	identityprovider "github.com/eclipse-che/che-operator/pkg/deploy/identity-provider"
-	"github.com/eclipse-che/che-operator/pkg/deploy/migration"
 	"github.com/eclipse-che/che-operator/pkg/deploy/openvsx"
 	openvsxdatabase "github.com/eclipse-che/che-operator/pkg/deploy/openvsx/openvsx-database"
 	openvsxserver "github.com/eclipse-che/che-operator/pkg/deploy/openvsx/openvsx-server"
 	"github.com/eclipse-che/che-operator/pkg/deploy/pluginregistry"
-	"github.com/eclipse-che/che-operator/pkg/deploy/postgres"
-	"github.com/eclipse-che/che-operator/pkg/deploy/rbac"
 	"github.com/eclipse-che/che-operator/pkg/deploy/server"
 	"github.com/eclipse-che/che-operator/pkg/deploy/tls"
 
 	chev2 "github.com/eclipse-che/che-operator/api/v2"
 	"github.com/go-logr/logr"
+	consolev1 "github.com/openshift/api/console/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -102,23 +108,21 @@ func NewReconciler(
 	reconcilerManager := reconciler.NewReconcilerManager()
 
 	// order does matter
-	reconcilerManager.AddReconciler(migration.NewMigrator())
-	reconcilerManager.AddReconciler(migration.NewCheClusterDefaultsCleaner())
-	reconcilerManager.AddReconciler(NewCheClusterValidator())
-	reconcilerManager.AddReconciler(tls.NewCertificatesReconciler())
-	reconcilerManager.AddReconciler(tls.NewTlsSecretReconciler())
-	reconcilerManager.AddReconciler(devworkspace.NewDevWorkspaceConfigReconciler())
-	reconcilerManager.AddReconciler(rbac.NewGatewayPermissionsReconciler())
-
-	if infrastructure.IsOpenShift() {
-		reconcilerManager.AddReconciler(networkpolicies.NewNetworkPoliciesReconciler())
-	}
+	reconcilerManager.AddReconciler(labelbackfill.NewReconciler())
+	reconcilerManager.AddReconciler(specmigration.NewReconciler())
 
 	// we have to expose che endpoint independently of syncing other server
 	// resources since che host is used for dashboard deployment and che config map
 	reconcilerManager.AddReconciler(server.NewCheHostReconciler())
+	// detect whether a self-signed certificate is used right after the che endpoint
+	// is exposed since the che route/ingress is used to get the certificates chain
+	reconcilerManager.AddReconciler(selfsignedcert.NewReconciler())
+	reconcilerManager.AddReconciler(tls.NewCertificatesReconciler())
+
+	reconcilerManager.AddReconciler(devworkspace.NewDevWorkspaceConfigReconciler())
+	reconcilerManager.AddReconciler(rbac.NewGatewayPermissionsReconciler())
+	reconcilerManager.AddReconciler(&networkpolicy.NetworkPoliciesReconciler{})
 	reconcilerManager.AddReconciler(server.NewBaseDomainReconciler())
-	reconcilerManager.AddReconciler(postgres.NewPostgresReconciler())
 	if infrastructure.IsOpenShiftOAuthEnabled() {
 		reconcilerManager.AddReconciler(identityprovider.NewIdentityProviderReconciler())
 	}
@@ -135,10 +139,13 @@ func NewReconciler(
 
 	if infrastructure.IsOpenShift() {
 		reconcilerManager.AddReconciler(containerbuild.NewContainerCapabilitiesReconciler())
-		reconcilerManager.AddReconciler(consolelink.NewConsoleLinkReconciler())
 	}
 
-	reconcilerManager.AddReconciler(agentsandbox.NewAgentSandboxReconciler())
+	if infrastructure.IsConsoleLinkEnabled() {
+		reconcilerManager.AddReconciler(consolelink.NewReconciler())
+	}
+
+	reconcilerManager.AddReconciler(agentsandbox.NewReconciler())
 
 	if infrastructure.IsServiceMonitorEnabled() {
 		reconcilerManager.AddReconciler(metrics.NewMetricsReconciler())
@@ -159,7 +166,7 @@ func NewReconciler(
 // SetupWithManager sets up the controller with the Manager.
 func (r *CheClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	var toTrustedBundleConfigMapRequestMapper handler.MapFunc = func(ctx context.Context, obj client.Object) []reconcile.Request {
-		isTrusted, reconcileRequest := IsTrustedBundleConfigMap(r.client, r.namespace, obj)
+		isTrusted, reconcileRequest := IsTrustedBundleConfigMap(ctx, r.client, obj)
 		if isTrusted {
 			return []reconcile.Request{reconcileRequest}
 		}
@@ -167,8 +174,27 @@ func (r *CheClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	var toEclipseCheRelatedObjRequestMapper handler.MapFunc = func(ctx context.Context, obj client.Object) []reconcile.Request {
-		isEclipseCheRelatedObj, reconcileRequest := IsEclipseCheRelatedObj(r.client, r.namespace, obj)
+		isEclipseCheRelatedObj, reconcileRequest := IsEclipseCheRelatedObj(ctx, r.client, obj)
 		if isEclipseCheRelatedObj {
+			return []reconcile.Request{reconcileRequest}
+		}
+		return []reconcile.Request{}
+	}
+
+	var toDevWorkspaceOperatorPodRequestMapper handler.MapFunc = func(
+		ctx context.Context,
+		obj client.Object,
+	) []reconcile.Request {
+		isDevWorkspaceOperatorPod, reconcileRequest := mapDevWorkspaceOperatorPodToCheCluster(ctx, r.client, obj)
+		if isDevWorkspaceOperatorPod {
+			return []reconcile.Request{reconcileRequest}
+		}
+		return []reconcile.Request{}
+	}
+
+	var toOperatorManagedObjRequestMapper handler.MapFunc = func(ctx context.Context, obj client.Object) []reconcile.Request {
+		isOperatorManagedObj, reconcileRequest := IsOperatorManaged(ctx, r.client, obj)
+		if isOperatorManagedObj {
 			return []reconcile.Request{reconcileRequest}
 		}
 		return []reconcile.Request{}
@@ -193,6 +219,12 @@ func (r *CheClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(toEclipseCheRelatedObjRequestMapper),
+		).
+		// Reconcile when the DevWorkspace Operator controller pod changes, e.g. on a DevWorkspace Operator update,
+		// so that the image puller pre-pulls its current project clone image.
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(toDevWorkspaceOperatorPodRequestMapper),
+			builder.WithPredicates(devWorkspaceOperatorPodPredicates),
 		)
 
 	if infrastructure.IsOpenShift() {
@@ -201,12 +233,18 @@ func (r *CheClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		bld.Owns(&networking.Ingress{})
 	}
 
+	if infrastructure.IsConsoleLinkEnabled() {
+		bld.Watches(&consolev1.ConsoleLink{},
+			handler.EnqueueRequestsFromMapFunc(toOperatorManagedObjRequestMapper),
+		)
+	}
+
 	if infrastructure.IsServiceMonitorEnabled() {
 		bld.Owns(&monitoringv1.ServiceMonitor{})
 	}
 
 	if r.namespace != "" {
-		bld = bld.WithEventFilter(utils.InNamespaceEventFilter(r.namespace))
+		bld = bld.WithEventFilter(inNamespaceOrDevWorkspaceOperatorPodEventFilter(r.namespace))
 	}
 
 	// Use controller.TypedOptions to allow to configure 2 controllers for same object being reconciled
@@ -225,29 +263,50 @@ func (r *CheClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *CheClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = r.Log.WithValues("checluster", req.NamespacedName)
 
-	clusterAPI := chetypes.ClusterAPI{
-		Client:                  r.client,
-		NonCachingClient:        r.nonCachedClient,
-		DiscoveryClient:         r.discoveryClient,
-		Scheme:                  r.Scheme,
-		ClientWrapper:           k8sclient.NewK8sClient(r.client, r.Scheme),
-		NonCachingClientWrapper: k8sclient.NewK8sClient(r.nonCachedClient, r.Scheme),
-	}
-
-	// Fetch the CheCluster instance
-	checluster, err := deploy.FindCheClusterCRInNamespace(r.client, req.Namespace)
-	if checluster == nil {
-		r.Log.Info("CheCluster Custom Resource not found.")
-		return ctrl.Result{}, nil
-	} else if err != nil {
-		// Error reading the object - requeue the request.
+	cheCluster := &chev2.CheCluster{}
+	err := r.client.Get(ctx, req.NamespacedName, cheCluster)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		r.Log.Error(err, "Failed to get CheCluster")
 		return ctrl.Result{}, err
 	}
 
 	cheCtx := &chetypes.CheContext{
-		ClusterAPI: clusterAPI,
-		CheCluster: checluster,
 		Context:    ctx,
+		CheCluster: cheCluster,
+		ClusterAPI: chetypes.ClusterAPI{
+			Client:                  r.client,
+			NonCachingClient:        r.nonCachedClient,
+			DiscoveryClient:         r.discoveryClient,
+			Scheme:                  r.Scheme,
+			ClientWrapper:           clientwrapper.New(r.client, r.Scheme),
+			NonCachingClientWrapper: clientwrapper.New(r.nonCachedClient, r.Scheme),
+		},
+	}
+
+	// Ensure the CheCluster is not deleted until the operator
+	// cleans up all related resources
+	if cheCtx.CheCluster.DeletionTimestamp.IsZero() {
+		if err := resources.CheCluster.AddFinalizer(cheCtx, constants.Finalizer); err != nil {
+			return r.requeueOnConflict(err)
+		}
+	} else {
+		cheCtx.CheCluster.Status.ChePhase = chev2.ClusterPhasePendingDeletion
+		if err := resources.CheCluster.SyncStatus(cheCtx); err != nil {
+			return r.requeueOnConflict(err)
+		}
+		if err := r.reconcilerManager.FinalizeAll(cheCtx); err != nil {
+			return r.requeueOnConflict(err)
+		}
+
+		// Removes remaining finalizers, which prevent CheCluster from deletion
+		if err := resources.CheCluster.RemoveAllFinalizers(cheCtx); err != nil {
+			return r.requeueOnConflict(err)
+		}
+
+		return ctrl.Result{}, nil
 	}
 
 	// Resolve proxy configuration
@@ -264,7 +323,7 @@ func (r *CheClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	cheCtx.DWONamespace, err = devworkspace.GetDevWorkspaceOperatorNamespace(ctx, clusterAPI.ClientWrapper)
+	cheCtx.DWONamespace, err = devworkspace.GetDevWorkspaceOperatorNamespace(ctx, cheCtx.ClusterAPI.ClientWrapper)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to get DevWorkspaceOperator namespace: %w", err)
 	}
@@ -273,50 +332,57 @@ func (r *CheClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	// Detect whether self-signed certificate is used
-	cheCtx.IsSelfSignedCertificate, err = tls.IsSelfSignedCertificateUsed(cheCtx)
-	if err != nil {
-		r.Log.Error(err, "Failed to detect if self-signed certificate used.")
-		return ctrl.Result{}, err
+	result, done, recErr := r.reconcilerManager.ReconcileAll(cheCtx)
+	if recErr != nil {
+		var retryErr *cheerrors.RetryError
+		if errors.As(recErr, &retryErr) {
+			r.Log.Info("Reconcile failed with a retryable error, requeuing", "error", recErr.Error())
+
+			cheCtx.CheCluster.Status.Reason = chev2.InstallOrUpdateRetrying
+			cheCtx.CheCluster.Status.Message = retryErr.Message
+
+			recErr = nil
+			result = ctrl.Result{RequeueAfter: utils.ValueOrDef(retryErr.RequeueAfter, time.Second)}
+		} else if k8serrors.IsConflict(recErr) {
+			r.Log.Info("Reconcile failed with a conflict error, requeuing", "error", recErr.Error())
+
+			// Conflicts are frequent and harmless. Setting InstallOrUpdateRetrying here costs one status write now
+			// and another on the next pass to clear it, so the status flickers.
+
+			recErr = nil
+			result = ctrl.Result{RequeueAfter: time.Second}
+		} else {
+			cheCtx.CheCluster.Status.Reason = chev2.InstallOrUpdateFailed
+			cheCtx.CheCluster.Status.Message = "Failed to reconcile CheCluster, the installation is not completed. Check logs for details."
+		}
+
+		if err := resources.CheCluster.SyncStatus(cheCtx); err != nil {
+			r.Log.Error(err, "Failed to update CheCluster status")
+		}
+
+		return result, recErr
 	}
 
-	if cheCtx.CheCluster.DeletionTimestamp.IsZero() {
-		result, done, err := r.reconcilerManager.ReconcileAll(cheCtx)
-		if done {
-			// Clean up status if so
-			if err := deploy.SetStatusDetails(cheCtx, "", ""); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			r.Log.Info("Successfully reconciled.")
-			return ctrl.Result{}, nil
-		} else {
-			if err != nil {
-				errMsg := "Failed to reconcile CheCluster resources. The installation is not completed. Check operator logs for details."
-				r.Log.Error(err, errMsg)
-
-				if err := deploy.SetStatusDetails(cheCtx, constants.InstallOrUpdateFailed, errMsg); err != nil {
-					return ctrl.Result{}, err
-				}
-			}
-
-			return result, err
-		}
-	} else {
-		cheCtx.CheCluster.Status.ChePhase = chev2.ClusterPhasePendingDeletion
-		if err = deploy.UpdateCheCRStatus(cheCtx, "ChePhase", chev2.ClusterPhasePendingDeletion); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		done := r.reconcilerManager.FinalizeAll(cheCtx)
-		if done {
-			// Removes remaining finalizers, which prevent CheCluster from deletion
-			if err := deploy.CleanUpAllFinalizers(cheCtx); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		} else {
-			return ctrl.Result{RequeueAfter: time.Second}, nil
-		}
+	cheCtx.CheCluster.Status.Reason = ""
+	cheCtx.CheCluster.Status.Message = ""
+	if err := resources.CheCluster.SyncStatus(cheCtx); err != nil {
+		return r.requeueOnConflict(err)
 	}
+
+	if done {
+		r.Log.Info("Successfully reconciled.")
+		return ctrl.Result{}, nil
+	}
+
+	return result, nil
+}
+
+// requeueOnConflict converts a conflict error into a short requeue,
+// and passes any other error through unchanged.
+func (r *CheClusterReconciler) requeueOnConflict(err error) (ctrl.Result, error) {
+	if k8serrors.IsConflict(err) {
+		r.Log.Info("Update conflict, requeuing", "error", err.Error())
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	return ctrl.Result{}, err
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
 	"github.com/eclipse-che/che-operator/pkg/deploy/openvsx"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -183,6 +184,10 @@ func (r *OpenVSXServerReconciler) getDeploymentSpec(cheCtx *chetypes.CheContext)
 									Value: openvsx.GetOpenVSXServerServiceURL(cheCtx),
 								},
 								{
+									Name:  "OVSX_SERVER_URL",
+									Value: openvsx.GetOpenVSXServerPublicURL(cheCtx),
+								},
+								{
 									Name:  "CONFIG_REVISION",
 									Value: configRevision,
 								},
@@ -229,7 +234,7 @@ func (r *OpenVSXServerReconciler) getDeploymentSpec(cheCtx *chetypes.CheContext)
 		},
 	}
 
-	deploy.EnsurePodSecurityStandards(
+	resources.Pod.EnsureSecurityStandards(
 		&deployment.Spec.Template.Spec,
 		constants.DefaultSecurityContextRunAsUser,
 		constants.DefaultSecurityContextFsGroup,

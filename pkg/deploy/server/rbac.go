@@ -14,15 +14,14 @@ package server
 
 import (
 	"fmt"
+	"slices"
 	"strings"
-
-	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
-	util "github.com/eclipse-che/che-operator/pkg/common/utils"
-	"github.com/sirupsen/logrus"
 
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
+	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -31,6 +30,9 @@ const (
 	userCommonPermissionsTemplateName       = "%s-cheworkspaces-clusterrole"
 	userDevWorkspacePermissionsTemplateName = "%s-cheworkspaces-devworkspace-clusterrole"
 	cheSASpecificPermissionsTemplateName    = "%s-cheworkspaces-namespaces-clusterrole"
+
+	crb                   = ".crb."
+	cheCRBFinalizerSuffix = crb + "finalizers." + constants.CheEclipseOrg
 )
 
 // Create ClusterRole and ClusterRoleBinding for "che" service account.
@@ -60,17 +62,17 @@ func (s *CheServerReconciler) syncPermissions(cheCtx *chetypes.CheContext) (bool
 			}
 
 			finalizer := s.getCRBFinalizerName(cheClusterRole)
-			if err := deploy.AppendFinalizer(cheCtx, finalizer); err != nil {
-				return false, err
+			if err := resources.CheCluster.AddFinalizer(cheCtx, finalizer); err != nil {
+				return false, fmt.Errorf("failed to add finalizer %s: %w", finalizer, err)
 			}
 		}
 	}
 
 	// Delete abandoned CRBs
-	for _, finalizer := range cheCtx.CheCluster.Finalizers {
+	for _, finalizer := range slices.Clone(cheCtx.CheCluster.Finalizers) {
 		if strings.HasSuffix(finalizer, cheCRBFinalizerSuffix) {
 			cheClusterRole := strings.TrimSuffix(finalizer, cheCRBFinalizerSuffix)
-			if !util.Contains(cheCtx.CheCluster.Spec.Components.CheServer.ClusterRoles, cheClusterRole) {
+			if !slices.Contains(cheCtx.CheCluster.Spec.Components.CheServer.ClusterRoles, cheClusterRole) {
 				if err := cheCtx.ClusterAPI.ClientWrapper.DeleteByKeyIgnoreNotFound(
 					cheCtx.Context,
 					types.NamespacedName{Name: cheClusterRole},
@@ -79,8 +81,8 @@ func (s *CheServerReconciler) syncPermissions(cheCtx *chetypes.CheContext) (bool
 					return false, fmt.Errorf("failed to delete ClusterRoleBinding %s: %w", cheClusterRole, err)
 				}
 
-				if err := deploy.DeleteFinalizer(cheCtx, finalizer); err != nil {
-					return false, err
+				if err := resources.CheCluster.RemoveFinalizer(cheCtx, finalizer); err != nil {
+					return false, fmt.Errorf("failed to delete finalizer %s: %w", finalizer, err)
 				}
 			}
 		}
@@ -89,14 +91,21 @@ func (s *CheServerReconciler) syncPermissions(cheCtx *chetypes.CheContext) (bool
 	return true, nil
 }
 
-func (s *CheServerReconciler) deletePermissions(cheCtx *chetypes.CheContext) bool {
+func (s *CheServerReconciler) getCRBFinalizerName(crbName string) string {
+	finalizer := crbName + cheCRBFinalizerSuffix
+	diff := len(finalizer) - 63
+	if diff > 0 {
+		return finalizer[:len(finalizer)-diff]
+	}
+	return finalizer
+}
+
+func (s *CheServerReconciler) deletePermissions(cheCtx *chetypes.CheContext) error {
 	names := []string{
 		fmt.Sprintf(userCommonPermissionsTemplateName, cheCtx.CheCluster.Namespace),
 		fmt.Sprintf(cheSASpecificPermissionsTemplateName, cheCtx.CheCluster.Namespace),
 		fmt.Sprintf(userDevWorkspacePermissionsTemplateName, cheCtx.CheCluster.Namespace),
 	}
-
-	done := true
 
 	for _, name := range names {
 		if err := cheCtx.ClusterAPI.ClientWrapper.DeleteByKeyIgnoreNotFound(
@@ -104,8 +113,7 @@ func (s *CheServerReconciler) deletePermissions(cheCtx *chetypes.CheContext) boo
 			types.NamespacedName{Name: name},
 			&rbacv1.ClusterRole{},
 		); err != nil {
-			done = false
-			logrus.Errorf("Failed to delete ClusterRole '%s', cause: %v", name, err)
+			return fmt.Errorf("failed to delete ClusterRole %s: %w", name, err)
 		}
 
 		if err := cheCtx.ClusterAPI.ClientWrapper.DeleteByKeyIgnoreNotFound(
@@ -113,8 +121,7 @@ func (s *CheServerReconciler) deletePermissions(cheCtx *chetypes.CheContext) boo
 			types.NamespacedName{Name: name},
 			&rbacv1.ClusterRoleBinding{},
 		); err != nil {
-			done = false
-			logrus.Errorf("Failed to delete ClusterRoleBinding '%s', cause: %v", name, err)
+			return fmt.Errorf("failed to delete ClusterRoleBinding %s: %w", name, err)
 		}
 	}
 
@@ -126,8 +133,7 @@ func (s *CheServerReconciler) deletePermissions(cheCtx *chetypes.CheContext) boo
 				types.NamespacedName{Name: name},
 				&rbacv1.ClusterRoleBinding{},
 			); err != nil {
-				done = false
-				logrus.Errorf("Failed to delete ClusterRoleBinding '%s', cause: %v", name, err)
+				return fmt.Errorf("failed to delete ClusterRoleBinding %s: %w", name, err)
 			}
 
 			// Removes any legacy CRB https://github.com/eclipse/che/issues/19506
@@ -137,13 +143,12 @@ func (s *CheServerReconciler) deletePermissions(cheCtx *chetypes.CheContext) boo
 				types.NamespacedName{Name: legacyName},
 				&rbacv1.ClusterRoleBinding{},
 			); err != nil {
-				done = false
-				logrus.Errorf("Failed to delete ClusterRoleBinding '%s', cause: %v", legacyName, err)
+				return fmt.Errorf("failed to delete ClusterRoleBinding %s: %w", legacyName, err)
 			}
 		}
 	}
 
-	return done
+	return nil
 }
 
 func (s *CheServerReconciler) getUserDevWorkspacePolicies() []rbacv1.PolicyRule {
@@ -271,7 +276,7 @@ func (s *CheServerReconciler) getUserCommonPolicies() []rbacv1.PolicyRule {
 		{
 			APIGroups: []string{"networking.k8s.io"},
 			Resources: []string{"ingresses"},
-			Verbs:     []string{"get", "list", "watch", "create", "delete"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 		},
 		{
 			APIGroups: []string{"metrics.k8s.io"},
@@ -293,7 +298,7 @@ func (s *CheServerReconciler) getUserCommonPolicies() []rbacv1.PolicyRule {
 		{
 			APIGroups: []string{"route.openshift.io"},
 			Resources: []string{"routes"},
-			Verbs:     []string{"get", "list", "create", "delete"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 		},
 		{
 			APIGroups: []string{"project.openshift.io"},

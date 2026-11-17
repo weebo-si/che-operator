@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -43,7 +44,7 @@ func TestOpenVSXServerReconciler(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 					},
 				},
 			},
@@ -75,7 +76,7 @@ func TestOpenVSXServerReconciler(t *testing.T) {
 	assert.True(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: constants.OpenVSXServerExtensionsConfigMapName, Namespace: ns}, &corev1.ConfigMap{}))
 	assert.True(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: constants.OpenVSXServerExtensionPublishJobName, Namespace: ns}, &batchv1.Job{}))
 
-	cheCtx.CheCluster.Spec.Components.OpenVSXRegistry.Enable = false
+	cheCtx.CheCluster.Spec.Components.OpenVSXRegistry.Enable = ptr.To(false)
 	test.EnsureReconcile(t, cheCtx, reconciler.Reconcile)
 
 	assert.False(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: constants.OpenVSXServerComponentName, Namespace: ns}, &appsv1.Deployment{}))
@@ -88,6 +89,137 @@ func TestOpenVSXServerReconciler(t *testing.T) {
 	assert.False(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: constants.OpenVSXServerExtensionUpdateCronJobName, Namespace: ns}, &batchv1.CronJob{}))
 }
 
+func TestPublishJobIncludesProxyEnv(t *testing.T) {
+	cheCtx := test.NewCtxBuilder().WithCheCluster(
+		&chev2.CheCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "eclipse-che",
+				Namespace: "eclipse-che",
+			},
+			Spec: chev2.CheClusterSpec{
+				Components: chev2.CheClusterComponents{
+					OpenVSXRegistry: chev2.OpenVSXRegistry{
+						Enable: ptr.To(true),
+					},
+				},
+			},
+		},
+	).Build()
+	cheCtx.Proxy.HttpProxy = "http://proxy.example.com:3128"
+	cheCtx.Proxy.HttpsProxy = "http://proxy.example.com:3128"
+	cheCtx.Proxy.NoProxy = "localhost,.svc,.cluster.local"
+
+	reconciler := NewOpenVSXServerReconciler()
+	test.EnsureReconcile(t, cheCtx, func(cheCtx *chetypes.CheContext) (result reconcile.Result, done bool, err error) {
+		result, done, err = reconciler.Reconcile(cheCtx)
+		if !done && err == nil {
+			deployment := &appsv1.Deployment{}
+			key := types.NamespacedName{Name: constants.OpenVSXServerComponentName, Namespace: cheCtx.CheCluster.Namespace}
+			if exists, _ := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(cheCtx.Context, key, deployment); exists {
+				deployment.Status.AvailableReplicas = 1
+				deployment.Status.UnavailableReplicas = 0
+				_ = cheCtx.ClusterAPI.Client.Status().Update(context.TODO(), deployment)
+			}
+		}
+		return result, done, err
+	})
+
+	job := &batchv1.Job{}
+	exists, err := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(
+		cheCtx.Context,
+		types.NamespacedName{
+			Name:      constants.OpenVSXServerExtensionPublishJobName,
+			Namespace: cheCtx.CheCluster.Namespace,
+		},
+		job,
+	)
+	if !assert.NoError(t, err) || !assert.True(t, exists, "publisher Job should exist") {
+		return
+	}
+
+	container := job.Spec.Template.Spec.Containers[0]
+	envMap := make(map[string]string)
+	for _, e := range container.Env {
+		envMap[e.Name] = e.Value
+	}
+
+	assert.Equal(t, cheCtx.Proxy.HttpProxy, envMap["http_proxy"])
+	assert.Equal(t, cheCtx.Proxy.HttpsProxy, envMap["https_proxy"])
+	assert.Equal(t, cheCtx.Proxy.NoProxy, envMap["no_proxy"])
+	assert.Equal(t, cheCtx.Proxy.HttpProxy, envMap["HTTP_PROXY"])
+	assert.Equal(t, cheCtx.Proxy.HttpsProxy, envMap["HTTPS_PROXY"])
+	assert.Equal(t, cheCtx.Proxy.NoProxy, envMap["NO_PROXY"])
+}
+
+func TestPublishJobResyncsOnProxyChange(t *testing.T) {
+	cheCtx := test.NewCtxBuilder().WithCheCluster(
+		&chev2.CheCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "eclipse-che",
+				Namespace: "eclipse-che",
+			},
+			Spec: chev2.CheClusterSpec{
+				Components: chev2.CheClusterComponents{
+					OpenVSXRegistry: chev2.OpenVSXRegistry{
+						Enable: ptr.To(true),
+					},
+				},
+			},
+		},
+	).Build()
+
+	reconciler := NewOpenVSXServerReconciler()
+	reconcileReady := func(cheCtx *chetypes.CheContext) (result reconcile.Result, done bool, err error) {
+		result, done, err = reconciler.Reconcile(cheCtx)
+		if !done && err == nil {
+			deployment := &appsv1.Deployment{}
+			key := types.NamespacedName{Name: constants.OpenVSXServerComponentName, Namespace: cheCtx.CheCluster.Namespace}
+			if exists, _ := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(cheCtx.Context, key, deployment); exists {
+				deployment.Status.AvailableReplicas = 1
+				deployment.Status.UnavailableReplicas = 0
+				_ = cheCtx.ClusterAPI.Client.Status().Update(context.TODO(), deployment)
+			}
+		}
+		return result, done, err
+	}
+
+	test.EnsureReconcile(t, cheCtx, reconcileReady)
+
+	jobKey := types.NamespacedName{
+		Name:      constants.OpenVSXServerExtensionPublishJobName,
+		Namespace: cheCtx.CheCluster.Namespace,
+	}
+	job := &batchv1.Job{}
+	exists, err := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(cheCtx.Context, jobKey, job)
+	if !assert.NoError(t, err) || !assert.True(t, exists, "publisher Job should exist") {
+		return
+	}
+	httpProxyEnv := findEnvVar(job.Spec.Template.Spec.Containers[0].Env, "HTTP_PROXY")
+	if assert.NotNil(t, httpProxyEnv) {
+		assert.Empty(t, httpProxyEnv.Value)
+	}
+
+	cheCtx.Proxy.HttpProxy = "http://proxy.example.com:3128"
+	cheCtx.Proxy.HttpsProxy = "http://proxy.example.com:3128"
+	cheCtx.Proxy.NoProxy = "localhost,.svc,.cluster.local"
+
+	test.EnsureReconcile(t, cheCtx, reconcileReady)
+
+	job = &batchv1.Job{}
+	exists, err = cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(cheCtx.Context, jobKey, job)
+	if !assert.NoError(t, err) || !assert.True(t, exists, "publisher Job should exist after proxy change") {
+		return
+	}
+
+	envMap := make(map[string]string)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
+	}
+	assert.Equal(t, cheCtx.Proxy.HttpProxy, envMap["HTTP_PROXY"])
+	assert.Equal(t, cheCtx.Proxy.HttpsProxy, envMap["HTTPS_PROXY"])
+	assert.Equal(t, cheCtx.Proxy.NoProxy, envMap["NO_PROXY"])
+}
+
 func TestDeploymentSpecHasWaitDatabaseInitContainer(t *testing.T) {
 	cheCtx := test.NewCtxBuilder().WithCheCluster(
 		&chev2.CheCluster{
@@ -98,7 +230,7 @@ func TestDeploymentSpecHasWaitDatabaseInitContainer(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 					},
 				},
 			},

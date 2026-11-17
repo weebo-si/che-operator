@@ -19,11 +19,12 @@ import (
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
 	"github.com/eclipse-che/che-operator/pkg/common/diffs"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
 	defaults "github.com/eclipse-che/che-operator/pkg/common/operator-defaults"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
 	"github.com/eclipse-che/che-operator/pkg/deploy/openvsx"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -51,7 +52,7 @@ func (r *OpenVSXServerReconciler) syncExtensionUpdateCronJob(cheCtx *chetypes.Ch
 	if err := cheCtx.ClusterAPI.ClientWrapper.Sync(
 		cheCtx.Context,
 		cronJob,
-		&k8sclient.SyncOptions{DiffOpts: diffs.CronJob},
+		&clientwrapper.SyncOptions{DiffOpts: diffs.CronJob},
 	); err != nil {
 		return fmt.Errorf("failed to sync CronJob %s/%s: %w", cronJob.Namespace, cronJob.Name, err)
 	}
@@ -87,6 +88,7 @@ func (r *OpenVSXServerReconciler) getExtensionUpdateCronJobSpec(cheCtx *chetypes
 		},
 		utils.EnvVarFromSecret("OVSX_PAT", credentialsSecret, "openvsx-publisher-token"),
 	}
+	env = append(env, deploy.GetProxyEnvVars(cheCtx.Proxy)...)
 
 	if autoUpdate.VSCodeEngineVersion != nil && *autoUpdate.VSCodeEngineVersion != "" {
 		env = append(env, corev1.EnvVar{
@@ -179,7 +181,7 @@ func (r *OpenVSXServerReconciler) getExtensionUpdateCronJobSpec(cheCtx *chetypes
 		},
 	}
 
-	deploy.EnsurePodSecurityStandards(
+	resources.Pod.EnsureSecurityStandards(
 		&cronJob.Spec.JobTemplate.Spec.Template.Spec,
 		constants.DefaultSecurityContextRunAsUser,
 		constants.DefaultSecurityContextFsGroup,

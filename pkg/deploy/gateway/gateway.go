@@ -18,7 +18,8 @@ import (
 	"os"
 
 	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"sigs.k8s.io/yaml"
@@ -27,12 +28,13 @@ import (
 
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
 	defaults "github.com/eclipse-che/che-operator/pkg/common/operator-defaults"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
 
 	chev2 "github.com/eclipse-che/che-operator/api/v2"
+	dwdefaults "github.com/eclipse-che/che-operator/controllers/devworkspace/defaults"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	appsv1 "k8s.io/api/apps/v1"
@@ -69,14 +71,17 @@ var (
 
 type GatewayReconciler struct {
 	reconciler.Reconcilable
+	readFile func(name string) ([]byte, error)
 }
 
 func NewGatewayReconciler() *GatewayReconciler {
-	return &GatewayReconciler{}
+	return &GatewayReconciler{
+		readFile: os.ReadFile,
+	}
 }
 
 func (p *GatewayReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconcile.Result, bool, error) {
-	done, err := SyncGatewayToCluster(cheCtx)
+	done, err := SyncGatewayToCluster(cheCtx, p.readFile)
 	if !done {
 		return reconcile.Result{}, false, err
 	}
@@ -84,16 +89,22 @@ func (p *GatewayReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconcile.Re
 	return reconcile.Result{}, true, nil
 }
 
-func (p *GatewayReconciler) Finalize(cheCtx *chetypes.CheContext) bool {
-	return true
+func (p *GatewayReconciler) Finalize(cheCtx *chetypes.CheContext) error {
+	return nil
 }
 
 // SyncGatewayToCluster installs or deletes the gateway based on the custom resource configuration
-func SyncGatewayToCluster(cheCtx *chetypes.CheContext) (bool, error) {
-	return syncAll(cheCtx)
+func SyncGatewayToCluster(
+	cheCtx *chetypes.CheContext,
+	readFile func(name string) ([]byte, error),
+) (bool, error) {
+	return syncAll(cheCtx, readFile)
 }
 
-func syncAll(cheCtx *chetypes.CheContext) (bool, error) {
+func syncAll(
+	cheCtx *chetypes.CheContext,
+	readFile func(name string) ([]byte, error),
+) (bool, error) {
 	instance := cheCtx.CheCluster
 
 	sa := getGatewayServiceAccountSpec(instance)
@@ -131,7 +142,7 @@ func syncAll(cheCtx *chetypes.CheContext) (bool, error) {
 	}
 
 	if instance.IsAccessTokenConfigured() {
-		headerRewritePluginConfig, err := getGatewayHeaderRewritePluginConfigSpec(instance)
+		headerRewritePluginConfig, err := getGatewayHeaderRewritePluginConfigSpec(instance, readFile)
 		if err != nil {
 			return false, err
 		}
@@ -180,7 +191,7 @@ func syncAll(cheCtx *chetypes.CheContext) (bool, error) {
 
 // syncGatewayObject syncs the given object into the CheCluster namespace.
 func syncGatewayObject(cheCtx *chetypes.CheContext, obj client.Object, diffOpts ...cmp.Option) error {
-	kind := k8sclient.GetObjectType(obj)
+	kind := clientwrapper.GetObjectType(obj)
 
 	if err := controllerutil.SetControllerReference(cheCtx.CheCluster, obj, cheCtx.ClusterAPI.Scheme); err != nil {
 		return fmt.Errorf("failed to set owner reference for %s %s/%s: %w", kind, obj.GetNamespace(), obj.GetName(), err)
@@ -189,7 +200,7 @@ func syncGatewayObject(cheCtx *chetypes.CheContext, obj client.Object, diffOpts 
 	if err := cheCtx.ClusterAPI.ClientWrapper.Sync(
 		cheCtx.Context,
 		obj,
-		&k8sclient.SyncOptions{DiffOpts: diffOpts},
+		&clientwrapper.SyncOptions{DiffOpts: diffOpts},
 	); err != nil {
 		return fmt.Errorf("failed to sync %s %s/%s: %w", kind, obj.GetNamespace(), obj.GetName(), err)
 	}
@@ -278,7 +289,7 @@ func GetConfigmapForGatewayConfig(
 			Namespace: cheCtx.CheCluster.Namespace,
 			Labels: labels.Merge(
 				deploy.GetLabels(gatewayConfigComponentName),
-				utils.GetMapOrDefault(cheCtx.CheCluster.Spec.Networking.Auth.Gateway.ConfigLabels, constants.DefaultSingleHostGatewayConfigMapLabels)),
+				dwdefaults.GetGatewayWorkspaceConfigMapLabels(cheCtx.CheCluster)),
 		},
 		Data: map[string]string{
 			componentName + ".yml": string(gatewayConfigContent),
@@ -354,15 +365,18 @@ func getGatewayRoleBindingSpec(instance *chev2.CheCluster) rbac.RoleBinding {
 }
 
 func generateRandomCookieSecret() []byte {
-	return []byte(base64.StdEncoding.EncodeToString([]byte(utils.GeneratePassword(16))))
+	return []byte(base64.StdEncoding.EncodeToString([]byte(utils.RandomString(16))))
 }
 
-func getGatewayHeaderRewritePluginConfigSpec(instance *chev2.CheCluster) (*corev1.ConfigMap, error) {
-	headerRewrite, err := os.ReadFile("/tmp/header-rewrite-traefik-plugin/headerRewrite.go")
+func getGatewayHeaderRewritePluginConfigSpec(
+	instance *chev2.CheCluster,
+	readFile func(name string) ([]byte, error),
+) (*corev1.ConfigMap, error) {
+	headerRewrite, err := readFile("/tmp/header-rewrite-traefik-plugin/headerRewrite.go")
 	if err != nil {
 		return nil, err
 	}
-	pluginMeta, err := os.ReadFile("/tmp/header-rewrite-traefik-plugin/.traefik.yml")
+	pluginMeta, err := readFile("/tmp/header-rewrite-traefik-plugin/.traefik.yml")
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +402,7 @@ func getGatewayTraefikConfigSpec(instance *chev2.CheCluster) corev1.ConfigMap {
 	traefikPort := 8081
 	logLevel := constants.DefaultTraefikLogLevel
 	if instance.Spec.Networking.Auth.Gateway.Traefik != nil {
-		logLevel = utils.GetValue(instance.Spec.Networking.Auth.Gateway.Traefik.LogLevel, logLevel)
+		logLevel = utils.ValueOrDef(instance.Spec.Networking.Auth.Gateway.Traefik.LogLevel, logLevel)
 	}
 	data := fmt.Sprintf(`
 entrypoints:
@@ -491,7 +505,7 @@ func getGatewayDeploymentSpec(cheCtx *chetypes.CheContext) (*appsv1.Deployment, 
 		},
 	}
 
-	deploy.EnsurePodSecurityStandards(
+	resources.Pod.EnsureSecurityStandards(
 		&deployment.Spec.Template.Spec,
 		constants.DefaultSecurityContextRunAsUser,
 		constants.DefaultSecurityContextFsGroup,
@@ -505,7 +519,7 @@ func getGatewayDeploymentSpec(cheCtx *chetypes.CheContext) (*appsv1.Deployment, 
 }
 
 func getContainersSpec(cheCtx *chetypes.CheContext) []corev1.Container {
-	configLabelsMap := utils.GetMapOrDefault(cheCtx.CheCluster.Spec.Networking.Auth.Gateway.ConfigLabels, constants.DefaultSingleHostGatewayConfigMapLabels)
+	configLabelsMap := dwdefaults.GetGatewayWorkspaceConfigMapLabels(cheCtx.CheCluster)
 	gatewayImage := defaults.GetGatewayImage(cheCtx.CheCluster)
 	configSidecarImage := defaults.GetGatewayConfigSidecarImage(cheCtx.CheCluster)
 	configLabels := labels.FormatLabels(configLabelsMap)

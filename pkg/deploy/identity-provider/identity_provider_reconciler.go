@@ -16,25 +16,18 @@ import (
 	"fmt"
 	"time"
 
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
+	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
-	"github.com/eclipse-che/che-operator/pkg/deploy"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	oauth "github.com/openshift/api/oauth/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
 )
-
-const (
-	OAuthFinalizerName = "oauthclients.finalizers.che.eclipse.org"
-)
-
-var logger = ctrl.Log.WithName("identity-provider")
 
 var (
 	oAuthClientDiffOpts = cmp.Options{
@@ -58,30 +51,21 @@ func (ip *IdentityProviderReconciler) Reconcile(cheCtx *chetypes.CheContext) (re
 	return reconcile.Result{}, true, nil
 }
 
-func (ip *IdentityProviderReconciler) Finalize(cheCtx *chetypes.CheContext) bool {
-	oauthClient, err := GetOAuthClient(cheCtx)
-	if err != nil {
-		logger.Error(err, "Failed to get OAuthClient")
-		return false
+func (ip *IdentityProviderReconciler) Finalize(cheCtx *chetypes.CheContext) error {
+	if infrastructure.IsOpenShiftExternalAuth() {
+		return nil
 	}
 
-	if oauthClient != nil {
-		if err := cheCtx.ClusterAPI.NonCachingClientWrapper.DeleteByKeyIgnoreNotFound(
-			cheCtx.Context,
-			types.NamespacedName{Name: oauthClient.Name},
-			&oauth.OAuthClient{},
-		); err != nil {
-			// failed to delete OAuthClient, but it shouldn't prevent us from removing the finalizer
-			logger.Error(err, "Failed to delete OAuthClient", "name", oauthClient.Name)
-		}
-	}
+	clientName := utils.ValueOrDef(
+		cheCtx.CheCluster.Spec.Networking.Auth.OAuthClientName,
+		cheCtx.CheCluster.Namespace+"-client",
+	)
 
-	if err := deploy.DeleteFinalizer(cheCtx, OAuthFinalizerName); err != nil {
-		logger.Error(err, "Failed to delete finalizer", "finalizer", OAuthFinalizerName)
-		return false
-	}
-
-	return true
+	return cheCtx.ClusterAPI.NonCachingClientWrapper.DeleteByKeyIgnoreNotFound(
+		cheCtx.Context,
+		types.NamespacedName{Name: clientName},
+		&oauth.OAuthClient{},
+	)
 }
 
 func syncOAuthClient(cheCtx *chetypes.CheContext) error {
@@ -94,10 +78,10 @@ func syncOAuthClient(cheCtx *chetypes.CheContext) error {
 
 	if oauthClient != nil {
 		oauthClientName = oauthClient.Name
-		oauthSecret = utils.GetValue(string(cheCtx.Authentication.ClientSecret), oauthClient.Secret)
+		oauthSecret = utils.ValueOrDef(string(cheCtx.Authentication.ClientSecret), oauthClient.Secret)
 	} else {
 		oauthClientName = GetOAuthClientName(cheCtx)
-		oauthSecret = utils.GetValue(string(cheCtx.Authentication.ClientSecret), utils.GeneratePassword(12))
+		oauthSecret = utils.ValueOrDef(string(cheCtx.Authentication.ClientSecret), utils.RandomString(12))
 	}
 
 	redirectURIs := []string{"https://" + cheCtx.CheHost + "/oauth/callback"}
@@ -111,13 +95,9 @@ func syncOAuthClient(cheCtx *chetypes.CheContext) error {
 	if err := cheCtx.ClusterAPI.NonCachingClientWrapper.Sync(
 		cheCtx.Context,
 		oauthClientSpec,
-		&k8sclient.SyncOptions{DiffOpts: oAuthClientDiffOpts, SuppressDiff: true},
+		&clientwrapper.SyncOptions{DiffOpts: oAuthClientDiffOpts, SuppressDiff: true},
 	); err != nil {
 		return fmt.Errorf("failed to sync OAuthClient %s: %w", oauthClientSpec.Name, err)
-	}
-
-	if err := deploy.AppendFinalizer(cheCtx, OAuthFinalizerName); err != nil {
-		return fmt.Errorf("failed to append finalizer %s: %w", OAuthFinalizerName, err)
 	}
 
 	return nil

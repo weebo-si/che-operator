@@ -18,17 +18,12 @@ import (
 
 	chev2 "github.com/eclipse-che/che-operator/api/v2"
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
 	"github.com/eclipse-che/che-operator/pkg/deploy/gateway"
-	"github.com/sirupsen/logrus"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-)
-
-const (
-	CheGatewayClusterPermissionsFinalizerName = "cheGateway.clusterpermissions.finalizers.che.eclipse.org"
 )
 
 type GatewayPermissionsReconciler struct {
@@ -49,19 +44,15 @@ func (gp *GatewayPermissionsReconciler) Reconcile(cheCtx *chetypes.CheContext) (
 		return reconcile.Result{RequeueAfter: time.Second}, false, err
 	}
 
-	if err := deploy.AppendFinalizer(cheCtx, CheGatewayClusterPermissionsFinalizerName); err != nil {
-		return reconcile.Result{RequeueAfter: time.Second}, false, err
-	}
-
 	return reconcile.Result{}, true, nil
 }
 
-func (gp *GatewayPermissionsReconciler) Finalize(cheCtx *chetypes.CheContext) bool {
+func (gp *GatewayPermissionsReconciler) Finalize(cheCtx *chetypes.CheContext) error {
 	if _, err := gp.deleteGatewayPermissions(cheCtx); err != nil {
-		logrus.Errorf("Error deleting finalizer: %v", err)
-		return false
+		return fmt.Errorf("failed to delete gateway permissions: %w", err)
 	}
-	return true
+
+	return nil
 }
 
 func (gp *GatewayPermissionsReconciler) deleteGatewayPermissions(cheCtx *chetypes.CheContext) (bool, error) {
@@ -80,10 +71,6 @@ func (gp *GatewayPermissionsReconciler) deleteGatewayPermissions(cheCtx *chetype
 		&rbacv1.ClusterRole{},
 	); err != nil {
 		return false, fmt.Errorf("failed to delete ClusterRole %s: %w", name, err)
-	}
-
-	if err := deploy.DeleteFinalizer(cheCtx, CheGatewayClusterPermissionsFinalizerName); err != nil {
-		return false, err
 	}
 
 	return true, nil

@@ -41,14 +41,16 @@ const (
 	OpenVSXCredentialsSecret = "openvsx-credentials"
 
 	// OpenVSXRegistry Server
-	OpenVSXServerComponentName = "openvsx-server"
-	OpenVSXServerGatewayPath   = "openvsx"
-	OpenVSXServerMemoryLimit   = "2Gi"
-	OpenVSXServerMemoryRequest = "512Mi"
-	OpenVSXServerCpuLimit      = "1"
-	OpenVSXServerCpuRequest    = "100m"
-	OpenVSXServerClaimSize     = "3Gi"
-	OpenVSXServerServicePort   = int32(8080)
+	// OpenVSXServerOriginalApplicationConfig stores the operator-generated application.yml in a ConfigMap annotation.
+	OpenVSXServerOriginalApplicationConfig = "che.eclipse.org/last-applied-configuration"
+	OpenVSXServerComponentName             = "openvsx-server"
+	OpenVSXServerGatewayPath               = "openvsx"
+	OpenVSXServerMemoryLimit               = "4Gi"
+	OpenVSXServerMemoryRequest             = "1Gi"
+	OpenVSXServerCpuLimit                  = "1"
+	OpenVSXServerCpuRequest                = "100m"
+	OpenVSXServerClaimSize                 = "3Gi"
+	OpenVSXServerServicePort               = int32(8080)
 
 	// OpenVSXRegistry Server extensions
 	OpenVSXServerExtensionPublishJobName    = "openvsx-server-publisher"
@@ -85,6 +87,10 @@ const (
 	DefaultSecurityContextFsGroup   = 1724
 	DefaultSecurityContextRunAsUser = 1724
 	DefaultCheServiceAccountName    = "che"
+
+	// GitServices
+	DefaultOauthTokenRefreshEnabled   = false
+	DefaultOauthTokenRefreshPeriodSec = int32(600)
 
 	// Certificates
 	DefaultCaBundleCertsCMName             = "ca-certs"
@@ -159,9 +165,9 @@ const (
 	OpenShiftCreateKubernetesNamespaces = false
 
 	// Ingress
-	DefaultSelfSignedCertificateSecretName = "self-signed-certificate"
-	DefaultCheTLSSecretName                = "che-tls"
-	DefaultIngressClass                    = "nginx"
+	SelfSignedCertificateSecretName = "self-signed-certificate"
+	DefaultCheTLSSecretName         = "che-tls"
+	DefaultIngressClass             = "nginx"
 
 	// components name
 	DevfileRegistryName                = "devfile-registry"
@@ -177,31 +183,28 @@ const (
 	WorkspacesNamespaceComponentName   = "workspaces-namespace"
 
 	// common
-	CheFlavor             = "che"
-	CheEclipseOrg         = "che.eclipse.org"
-	WorkspacesConfig      = "workspaces-config"
-	InstallOrUpdateFailed = "InstallOrUpdateFailed"
-	FinalizerSuffix       = "finalizers.che.eclipse.org"
-	PublicCertsDir        = "/public-certs"
+	CheFlavor        = "che"
+	CheEclipseOrg    = "che.eclipse.org"
+	WorkspacesConfig = "workspaces-config"
+	PublicCertsDir   = "/public-certs"
 
 	// DevWorkspace
 	DevWorkspaceControllerName             = "devworkspace-controller"
 	DevWorkspaceOperatorName               = "devworkspace-operator"
 	DevWorkspaceServiceAccountName         = "devworkspace-controller-serviceaccount"
+	DevWorkspaceProjectCloneImageEnvName   = "RELATED_IMAGE_project_clone"
 	DefaultContainerBuildSccName           = "container-build"
 	DefaultContainerRunSccName             = "container-run"
 	DefaultDisableContainerRunCapabilities = true
 
 	// Networking
-	NetworkPolicyEnabled = false
+	DefaultNetworkPolicyEnabled = false
 
 	// AgentSandbox
 	AgentSandboxEnabled       = false
 	AgentSandboxComponentName = "agent-sandbox"
 
-	// Finalizers
-	ContainerBuildFinalizer = "container-build.finalizers.che.eclipse.org"
-	ContainerRunFinalizer   = "che.eclipse.org/container-run"
+	Finalizer = "che.eclipse.org/checluster-controller"
 )
 
 var (

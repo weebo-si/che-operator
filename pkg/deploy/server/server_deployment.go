@@ -24,6 +24,7 @@ import (
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
 	"github.com/eclipse-che/che-operator/pkg/deploy/tls"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -70,7 +71,7 @@ func (s CheServerReconciler) getDeploymentSpec(cheCtx *chetypes.CheContext) (*ap
 			Name: "che-self-signed-cert",
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: constants.DefaultSelfSignedCertificateSecretName,
+					SecretName: constants.SelfSignedCertificateSecretName,
 				},
 			},
 		}
@@ -242,7 +243,7 @@ func (s CheServerReconciler) getDeploymentSpec(cheCtx *chetypes.CheContext) (*ap
 		}
 	}
 
-	deploy.EnsurePodSecurityStandards(
+	resources.Pod.EnsureSecurityStandards(
 		&deployment.Spec.Template.Spec,
 		constants.DefaultSecurityContextRunAsUser,
 		constants.DefaultSecurityContextFsGroup,

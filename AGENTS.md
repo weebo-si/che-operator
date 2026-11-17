@@ -40,7 +40,7 @@ at the first `done=false`. Registration order in `controllers/che/checluster_con
 - `CheCluster` — the CR being reconciled
 - `ClusterAPI` — cached and non-cached k8s clients, discovery client, `ClientWrapper` / `NonCachingClientWrapper`
 - `Proxy`, `Authentication` — resolved configuration
-- `IsSelfSignedCertificate`, `CheHost`, `DwoNamespace`
+- `CheHost`, `DwoNamespace`
 
 ### Component Packages (`pkg/deploy/`)
 
@@ -76,7 +76,7 @@ Test helpers in `pkg/common/test/` provide utilities for setting up fake k8s cli
 
 ```bash
 # OpenShift — deploy from sources via OLM
-build/scripts/olm/test-catalog-from-sources.sh
+build/scripts/oc-tests/oc-test.sh --install-from sources
 
 # Minikube
 build/scripts/minikube-tests/test-operator-from-sources.sh

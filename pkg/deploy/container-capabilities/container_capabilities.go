@@ -14,14 +14,14 @@ package containercapabilities
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	chev2 "github.com/eclipse-che/che-operator/api/v2"
 	"github.com/eclipse-che/che-operator/pkg/common/diffs"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
-	ctrl "sigs.k8s.io/controller-runtime"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 
 	"k8s.io/apimachinery/pkg/types"
 
@@ -35,10 +35,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-var (
-	logger = ctrl.Log.WithName("containercapabilities")
-)
-
 type ContainerCapability interface {
 	GetUserRoleName() string
 	GetUserClusterRoleBindingName() string
@@ -47,7 +43,6 @@ type ContainerCapability interface {
 	getSCCName(cheCluster *chev2.CheCluster) string
 	getDefaultSCCName() string
 	applySCCSpec(scc *securityv1.SecurityContextConstraints)
-	getFinalizer() string
 }
 
 type ContainerCapabilitiesReconciler struct {
@@ -90,18 +85,16 @@ func (r *ContainerCapabilitiesReconciler) Reconcile(cheCtx *chetypes.CheContext)
 	return reconcile.Result{}, true, nil
 }
 
-func (r *ContainerCapabilitiesReconciler) Finalize(cheCtx *chetypes.CheContext) bool {
+func (r *ContainerCapabilitiesReconciler) Finalize(cheCtx *chetypes.CheContext) error {
 	if err := r.delete(cheCtx, r.containerBuildCapability); err != nil {
-		logger.Error(err, "Failed to delete container build capability resources")
-		return false
+		return fmt.Errorf("failed to delete container build capability resources: %w", err)
 	}
 
 	if err := r.delete(cheCtx, r.containerRunCapability); err != nil {
-		logger.Error(err, "Failed to delete container run capability resources")
-		return false
+		return fmt.Errorf("failed to delete container run capability resources: %w", err)
 	}
 
-	return true
+	return nil
 }
 
 func (r *ContainerCapabilitiesReconciler) sync(cheCtx *chetypes.CheContext, cc ContainerCapability) error {
@@ -116,7 +109,7 @@ func (r *ContainerCapabilitiesReconciler) sync(cheCtx *chetypes.CheContext, cc C
 			sccName,
 			cc.getDWOClusterRoleName(),
 		),
-		&k8sclient.SyncOptions{DiffOpts: diffs.ClusterRole},
+		&clientwrapper.SyncOptions{DiffOpts: diffs.ClusterRole},
 	); err != nil {
 		return err
 	}
@@ -128,7 +121,7 @@ func (r *ContainerCapabilitiesReconciler) sync(cheCtx *chetypes.CheContext, cc C
 			cc.getDWOClusterRoleName(),
 			cc.getDWOClusterRoleBindingName(),
 		),
-		&k8sclient.SyncOptions{DiffOpts: diffs.ClusterRoleBinding},
+		&clientwrapper.SyncOptions{DiffOpts: diffs.ClusterRoleBinding},
 	); err != nil {
 		return err
 	}
@@ -139,7 +132,7 @@ func (r *ContainerCapabilitiesReconciler) sync(cheCtx *chetypes.CheContext, cc C
 			sccName,
 			cc.GetUserRoleName(),
 		),
-		&k8sclient.SyncOptions{DiffOpts: diffs.ClusterRole},
+		&clientwrapper.SyncOptions{DiffOpts: diffs.ClusterRole},
 	); err != nil {
 		return err
 	}
@@ -159,7 +152,7 @@ func (r *ContainerCapabilitiesReconciler) sync(cheCtx *chetypes.CheContext, cc C
 			if err := cheCtx.ClusterAPI.NonCachingClientWrapper.Sync(
 				context.TODO(),
 				scc,
-				&k8sclient.SyncOptions{DiffOpts: diffs.SecurityContextConstraints},
+				&clientwrapper.SyncOptions{DiffOpts: diffs.SecurityContextConstraints},
 			); err != nil {
 				return err
 			}
@@ -184,10 +177,6 @@ func (r *ContainerCapabilitiesReconciler) sync(cheCtx *chetypes.CheContext, cc C
 			return err
 		}
 	} else {
-		return err
-	}
-
-	if err := deploy.AppendFinalizer(cheCtx, cc.getFinalizer()); err != nil {
 		return err
 	}
 
@@ -219,7 +208,7 @@ func (r *ContainerCapabilitiesReconciler) delete(cheCtx *chetypes.CheContext, cc
 		return err
 	}
 
-	sccName := utils.GetValue(cc.getSCCName(cheCtx.CheCluster), cc.getDefaultSCCName())
+	sccName := utils.ValueOrDef(cc.getSCCName(cheCtx.CheCluster), cc.getDefaultSCCName())
 	sccKey := types.NamespacedName{Name: sccName}
 
 	scc := &securityv1.SecurityContextConstraints{}
@@ -234,10 +223,6 @@ func (r *ContainerCapabilitiesReconciler) delete(cheCtx *chetypes.CheContext, cc
 			}
 		}
 	} else if err != nil {
-		return err
-	}
-
-	if err := deploy.DeleteFinalizer(cheCtx, cc.getFinalizer()); err != nil {
 		return err
 	}
 

@@ -72,7 +72,7 @@ func TestExtensionAutoUpdateCronJobCreated(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
 							Enable: ptr.To(true),
 						},
@@ -101,7 +101,7 @@ func TestExtensionAutoUpdateCronJobNotCreatedWhenDisabled(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 					},
 				},
 			},
@@ -127,7 +127,7 @@ func TestExtensionAutoUpdateCronJobCleanedUpOnDisable(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
 							Enable: ptr.To(true),
 						},
@@ -165,7 +165,7 @@ func TestExtensionAutoUpdateCronJobSpec(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
 							Enable:              ptr.To(true),
 							Schedule:            ptr.To(customSchedule),
@@ -212,6 +212,49 @@ func TestExtensionAutoUpdateCronJobSpec(t *testing.T) {
 	}
 }
 
+func TestExtensionAutoUpdateCronJobIncludesProxyEnv(t *testing.T) {
+	cheCtx := test.NewCtxBuilder().WithCheCluster(
+		&chev2.CheCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "eclipse-che",
+				Namespace: "eclipse-che",
+			},
+			Spec: chev2.CheClusterSpec{
+				Components: chev2.CheClusterComponents{
+					OpenVSXRegistry: chev2.OpenVSXRegistry{
+						Enable: ptr.To(true),
+						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
+							Enable: ptr.To(true),
+						},
+					},
+				},
+			},
+		},
+	).Build()
+	cheCtx.Proxy.HttpProxy = "http://proxy.example.com:3128"
+	cheCtx.Proxy.HttpsProxy = "http://proxy.example.com:3128"
+	cheCtx.Proxy.NoProxy = "localhost,.svc,.cluster.local"
+
+	reconciler := NewOpenVSXServerReconciler()
+	cronJob, err := reconciler.getExtensionUpdateCronJobSpec(cheCtx)
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	container := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
+	envMap := make(map[string]string)
+	for _, e := range container.Env {
+		envMap[e.Name] = e.Value
+	}
+
+	assert.Equal(t, cheCtx.Proxy.HttpProxy, envMap["http_proxy"])
+	assert.Equal(t, cheCtx.Proxy.HttpsProxy, envMap["https_proxy"])
+	assert.Equal(t, cheCtx.Proxy.NoProxy, envMap["no_proxy"])
+	assert.Equal(t, cheCtx.Proxy.HttpProxy, envMap["HTTP_PROXY"])
+	assert.Equal(t, cheCtx.Proxy.HttpsProxy, envMap["HTTPS_PROXY"])
+	assert.Equal(t, cheCtx.Proxy.NoProxy, envMap["NO_PROXY"])
+}
+
 func TestExtensionAutoUpdateCronJobNoExcludedExtensions(t *testing.T) {
 	cheCtx := test.NewCtxBuilder().WithCheCluster(
 		&chev2.CheCluster{
@@ -222,7 +265,7 @@ func TestExtensionAutoUpdateCronJobNoExcludedExtensions(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
 							Enable: ptr.To(true),
 						},
@@ -257,7 +300,7 @@ func TestExtensionAutoUpdateCronJobDefaultSchedule(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
 							Enable: ptr.To(true),
 						},
@@ -286,7 +329,7 @@ func TestExtensionAutoUpdateCronJobNoEngineVersion(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
 							Enable: ptr.To(true),
 						},
@@ -321,7 +364,7 @@ func TestExtensionAutoUpdateCronJobCleanedUpWhenRegistryDisabled(t *testing.T) {
 			Spec: chev2.CheClusterSpec{
 				Components: chev2.CheClusterComponents{
 					OpenVSXRegistry: chev2.OpenVSXRegistry{
-						Enable: true,
+						Enable: ptr.To(true),
 						ExtensionAutoUpdate: &chev2.ExtensionAutoUpdate{
 							Enable: ptr.To(true),
 						},
@@ -339,7 +382,7 @@ func TestExtensionAutoUpdateCronJobCleanedUpWhenRegistryDisabled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, exists, "CronJob should exist")
 
-	cheCtx.CheCluster.Spec.Components.OpenVSXRegistry.Enable = false
+	cheCtx.CheCluster.Spec.Components.OpenVSXRegistry.Enable = ptr.To(false)
 	test.EnsureReconcile(t, cheCtx, reconcileWithReadyDeployment(reconciler))
 
 	assert.False(t,

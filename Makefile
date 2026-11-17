@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright (c) 2019-2023 Red Hat, Inc.
+# Copyright (c) 2019-2026 Red Hat, Inc.
 # This program and the accompanying materials are made
 # available under the terms of the Eclipse Public License 2.0
 # which is available at https://www.eclipse.org/legal/epl-2.0/
@@ -10,10 +10,6 @@
 # Contributors:
 #   Red Hat, Inc. - initial API and implementation
 #
-
-ifeq (,$(shell which kubectl)$(shell which oc))
-$(error oc or kubectl is required to proceed)
-endif
 
 ifneq (,$(shell which kubectl))
 K8S_CLI := kubectl
@@ -25,10 +21,8 @@ endif
 ifeq ($(IMAGE_TOOL),)
 ifneq (,$(shell command -v docker 2>/dev/null))
 IMAGE_TOOL := docker
-else ifneq (,$(shell command -v podman 2>/dev/null))
-IMAGE_TOOL := podman
 else
-$(warning Neither docker nor podman found in PATH; set IMAGE_TOOL=<tool> to run image-related targets)
+IMAGE_TOOL := podman
 endif
 endif
 
@@ -66,8 +60,6 @@ ECLIPSE_CHE_PACKAGE_NAME=eclipse-che
 CHECLUSTER_CR_PATH="$(PROJECT_DIR)/config/samples/org_v2_checluster.yaml"
 CHECLUSTER_CRD_PATH="$(PROJECT_DIR)/config/crd/bases/org.eclipse.che_checlusters.yaml"
 
-DEV_HEADER_REWRITE_TRAEFIK_PLUGIN="main"
-
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -75,9 +67,8 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
-# Setting SHELL to bash allows bash commands to be executed by recipes.
-# This is a requirement for 'setup-envtest.sh' in the test target.
-# Options are set to exit when a recipe line exits non-zero or a piped command fails.
+# Run all lines of a recipe in a single shell, so that shell variables, loops and
+# multi-line commands span across lines. Requires GNU make 3.82+.
 .ONESHELL:
 
 all: build
@@ -283,22 +274,27 @@ fmt: download-addlicense ## Run go fmt against code.
 	FILES_TO_CHECK_LICENSE=$$(find . \
 		-not -path "./mocks/*" \
 		-not -path "./vendor/*" \
-		-not -path "./testbin/*" \
+		-not -path "./bin/testbin/*" \
 		-not -path "./bundle/stable/*" \
 		-not -path "./config/manager/controller_manager_config.yaml" \
+		-not -path "./pkg/deploy/openvsx/openvsx-server/application.yml" \
+		-not -path "./header-rewrite-traefik-plugin/*" \
 		\( -name '*.sh' -o -name "*.go" -o -name "*.yaml" -o -name "*.yml" \))
 
 	$(MAKE) license $${FILES_TO_CHECK_LICENSE}
 
 vet: ## Run go vet against code.
-	go vet ./...
+	go vet -tags=integration ./...
 
 lint: ## Run static code analyzers
 	golangci-lint run
 
-ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
-test: download-gateway-resources ## Run tests.
-	go test -mod=vendor ./... -coverprofile cover.out
+test: SHELL := /bin/bash
+test: .SHELLFLAGS := -ec
+test: download-setup-envtest ## Run tests
+	KUBEBUILDER_ASSETS=$$(make get-envtest-assets-path)
+	export KUBEBUILDER_ASSETS
+	go test -mod=vendor ./... -coverprofile cover.out -tags=integration -count=1
 
 update-go-dependencies:  ## Update golang dependencies
 	go mod tidy
@@ -344,8 +340,12 @@ genenerate-env:
 	cat $(BASH_ENV_FILE)
 
 install-che-operands: SHELL := /bin/bash
-install-che-operands: generate manifests download-kustomize download-gateway-resources copy-editors-definitions
+install-che-operands: generate manifests download-kustomize copy-editors-definitions
 	PLATFORM=$$($(MAKE) get_platform)
+
+	# Copy traefik plugin
+	rm -rf /tmp/header-rewrite-traefik-plugin
+	cp -r header-rewrite-traefik-plugin /tmp
 
 	if [[ "$$($(K8S_CLI) get crd | grep "cert-manager.io" | wc -l)" == "0" ]]; then
 		[[ $${PLATFORM} == "kubernetes" ]] && $(MAKE) install-certmgr
@@ -359,20 +359,23 @@ install-che-operands: generate manifests download-kustomize download-gateway-res
 		echo "[INFO] DevWorkspace operator is already installed"
 	fi
 
+	OPERATOR_NAMESPACE=$$($(MAKE) get_operator_namespace)
+	if [[ -n "$$($(K8S_CLI) get deploy che-operator -n "$${OPERATOR_NAMESPACE}" --ignore-not-found -o name)" ]]; then
+		$(K8S_CLI) scale deploy che-operator -n "$${OPERATOR_NAMESPACE}" --replicas=0
+	fi
+
 	if [[ "$$($(K8S_CLI) get crd | grep "checlusters.org.eclipse.che" | wc -l)" == "0" ]]; then
-		$(KUSTOMIZE) build config/$${PLATFORM} | $(K8S_CLI) apply --server-side -f -
+		# The Deployment is excluded since the operator is meant to run locally
+		$(KUSTOMIZE) build config/$${PLATFORM} | yq -r 'select(.kind != "Deployment")' | $(K8S_CLI) apply --server-side -f -
 	else
 		echo "[INFO] Che operator is already installed"
 	fi
 
-	OPERATOR_NAMESPACE=$$($(MAKE) get_operator_namespace)
-	$(K8S_CLI) scale deploy che-operator -n "$${OPERATOR_NAMESPACE}" --replicas=0
-
 	# Delete Webhooks since che operator pod is scaled down
 	# It allows creating/updating CheCluster custom resource
 	if [[ ! "$(DELETE_WEBHOOKS)" == "false" ]]; then
-		$(K8S_CLI) delete validatingwebhookconfiguration org.eclipse.che
-		$(K8S_CLI) delete mutatingwebhookconfiguration org.eclipse.che
+		$(K8S_CLI) delete validatingwebhookconfiguration org.eclipse.che --ignore-not-found
+		$(K8S_CLI) delete mutatingwebhookconfiguration org.eclipse.che --ignore-not-found
 		$(K8S_CLI) patch crd checlusters.org.eclipse.che --patch '{"spec": {"conversion": null}}' --type=merge
 	fi
 
@@ -385,18 +388,6 @@ copy-editors-definitions:
 	mkdir -p /tmp/editors-definitions
 	cp -r $(PROJECT_DIR)/editors-definitions/* /tmp/editors-definitions
 
-# Downloads Gateway resources
-download-gateway-resources:
-	GATEWAY_RESOURCES=/tmp/header-rewrite-traefik-plugin
-
-	rm -rf /tmp/asset-header-rewrite-traefik-plugin.zip /tmp/*-header-rewrite-traefik-plugin-*/ $${GATEWAY_RESOURCES}
-	mkdir -p $${GATEWAY_RESOURCES}
-	curl -sL https://api.github.com/repos/che-incubator/header-rewrite-traefik-plugin/zipball/${DEV_HEADER_REWRITE_TRAEFIK_PLUGIN} > /tmp/asset-header-rewrite-traefik-plugin.zip
-	unzip -q /tmp/asset-header-rewrite-traefik-plugin.zip -d /tmp
-	mv /tmp/*-header-rewrite-traefik-plugin-*/headerRewrite.go /tmp/*-header-rewrite-traefik-plugin-*/.traefik.yml $${GATEWAY_RESOURCES}
-
-	echo "[INFO] Gateway resources downloaded into  $${GATEWAY_RESOURCES}"
-
 # Store `che-operator-webhook-server-cert` secret locally
 store_tls_cert:
 	OPERATOR_NAMESPACE=$$($(MAKE) get_operator_namespace)
@@ -407,15 +398,12 @@ store_tls_cert:
 
 get_operator_namespace: SHELL := /bin/bash
 get_operator_namespace:
-	PLATFORM=$$($(MAKE) get_platform)
-	if [[ $$($(K8S_CLI) get deployments.apps -l app.kubernetes.io/component=che-operator -A -o go-template='{{len .items}}') == 0 ]]; then
-		if [[ "$${PLATFORM}" == "kubernetes" ]]; then
-			echo "eclipse-che"
-		else
-			echo "openshift-operators"
-		fi
-	else
+	if [[ $$($(K8S_CLI) get deployments.apps -l app.kubernetes.io/component=che-operator -A -o go-template='{{len .items}}') != 0 ]]; then
 		echo $$($(K8S_CLI) get deployments.apps -l app.kubernetes.io/component=che-operator -A -o "jsonpath={.items[0].metadata.namespace}")
+	elif [[ $$($(K8S_CLI) get service -A --field-selector metadata.name=che-operator-service -o go-template='{{len .items}}') != 0 ]]; then
+		echo $$($(K8S_CLI) get service -A --field-selector metadata.name=che-operator-service -o "jsonpath={.items[0].metadata.namespace}")
+	else
+		echo "eclipse-che"
 	fi
 
 get_che_namespace: SHELL := /bin/bash
@@ -538,6 +526,7 @@ bundle-build-and-push-multiarch: ## Build a bundle image
 	$(IMAGE_TOOL) buildx build --network=none --push --platform $(ARCHS) -f $${BUNDLE_PATH}/bundle.Dockerfile -t $(BUNDLE_IMG) $${BUNDLE_PATH}
 
 bundle-render: SHELL := /bin/bash
+bundle-render: .SHELLFLAGS := -eo pipefail -c
 bundle-render: download-opm ## Add bundle to a catalog
 	[[ -z "$(CHANNEL)" ]] && { echo [ERROR] CHANNEL not defined; exit 1; }
 	[[ -z "$(BUNDLE_NAME)" ]] && { echo [ERROR] BUNDLE_NAME not defined; exit 1; }
@@ -593,6 +582,7 @@ csv-path: ## Prints path to a clusterserviceversion file for a given channel
 	echo "$${BUNDLE_PATH}/manifests/che-operator.clusterserviceversion.yaml"
 
 bundle-name: SHELL := /bin/bash
+bundle-name: .SHELLFLAGS := -eo pipefail -c
 bundle-name: ## Prints a clusterserviceversion name for a given channel
 	[[ -z "$(CHANNEL)" ]] && { echo [ERROR] CHANNEL not defined; exit 1; }
 	CSV_PATH=$$($(MAKE) csv-path)
@@ -628,6 +618,12 @@ download-kustomize: ## Download kustomize tool
 ADD_LICENSE = $(shell pwd)/bin/addlicense
 download-addlicense: ## Download addlicense tool
 	$(call go-get-tool,$(ADD_LICENSE),github.com/google/addlicense@99ebc9c9db7bceb8623073e894533b978d7b7c8a)
+
+ENVTEST_K8S_VERSION ?= "1.37.x"
+ENVTEST_ASSETS_DIR = $(shell pwd)/bin/testbin
+SETUP_ENVTEST = $(shell pwd)/bin/setup-envtest
+download-setup-envtest: ## Download setup-envtest tool and the envtest control plane binaries
+	$(call go-get-tool,$(SETUP_ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2)
 
 OPERATOR_SDK_VERSION ?= "v1.39.2"
 OPERATOR_SDK ?= $(shell pwd)/bin/operator-sdk
@@ -693,9 +689,14 @@ increment-bundle-version:
 	echo "[INFO] New next version: $${NEW_NEXT_BUNDLE_VERSION}"
 
 
+get-envtest-assets-path: SHELL := /bin/bash
+get-envtest-assets-path: ## Resolve the path to the envtest assets for the configured Kubernetes version.
+	echo $$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(ENVTEST_ASSETS_DIR) -p path)
+
 ##@ Kubernetes helper
 
 create-catalogsource: SHELL := /bin/bash
+create-catalogsource: .SHELLFLAGS := -eo pipefail -c
 create-catalogsource: ## Creates catalog source
 	[[ -z "$(NAME)" ]] && { echo [ERROR] NAME not defined; exit 1; }
 	[[ -z "$(IMAGE)" ]] && { echo [ERROR] IMAGE not defined; exit 1; }
@@ -724,7 +725,7 @@ create-catalogsource: ## Creates catalog source
 	  }
 	}' | $(K8S_CLI) apply -f -
 
-	sleep 20s
+	sleep 20
 	$(K8S_CLI) wait --for=condition=ready pod -l "olm.catalogSource=$(NAME)" -n $${DEFINED_NAMESPACE} --timeout=240s
 
 create-operatorgroup: SHELL := /bin/bash
@@ -745,6 +746,7 @@ create-operatorgroup: ## Creates operator group
 	fi
 
 create-subscription: SHELL := /bin/bash
+create-subscription: .SHELLFLAGS := -eo pipefail -c
 create-subscription: ## Creates subscription
 	[[ -z "$(NAME)" ]] && { echo [ERROR] NAME not defined; exit 1; }
 	[[ -z "$(NAMESPACE)" ]] && { echo [ERROR] NAMESPACE not defined; exit 1; }
@@ -776,6 +778,7 @@ create-subscription: ## Creates subscription
 	fi
 
 approve-installplan: SHELL := /bin/bash
+approve-installplan: .SHELLFLAGS := -eo pipefail -c
 approve-installplan: ## Approves install plan
 	[[ -z "$(SUBSCRIPTION_NAME)" ]] && { echo [ERROR] SUBSCRIPTION_NAME not defined; exit 1; }
 	[[ -z "$(NAMESPACE)" ]] && { echo [ERROR] NAMESPACE not defined; exit 1; }
@@ -790,12 +793,13 @@ create-namespace: ## Creates namespace
 	$(K8S_CLI) create namespace $${DEFINED_NAMESPACE} || true
 
 wait-pod-running: SHELL := /bin/bash
+wait-pod-running: .SHELLFLAGS := -eo pipefail -c
 wait-pod-running: ## Wait until pod is up and running
 	[[ -z "$(SELECTOR)" ]] && { echo [ERROR] SELECTOR not defined; exit 1; }
 	[[ -z "$(NAMESPACE)" ]] && { echo [ERROR] NAMESPACE not defined; exit 1; }
 
 	while [ $$($(K8S_CLI) get pod -l $(SELECTOR) -n $(NAMESPACE) -o go-template='{{len .items}}') -eq 0 ]; do
-		sleep 10s
+		sleep 10
 	done
 	$(K8S_CLI) wait --for=condition=ready pod -l $(SELECTOR) -n $(NAMESPACE) --timeout=120s
 
@@ -873,6 +877,7 @@ create-checluster-cr: ## Creates CheCluster Custom Resource V2
 			CLUSTER_API_URL=$$(oc whoami --show-server=true) || true;
 			CLUSTER_DOMAIN=$$(echo $${CLUSTER_API_URL} | sed -E 's/https:\/\/(.*):.*/\1/g')
 			yq -riY  '.spec.networking.domain = "'$${CLUSTER_DOMAIN}'.nip.io"' $${CHECLUSTER_CR_2_APPLY}
+			yq -riY  '.spec.networking.tlsSecretName = "che-tls"' $${CHECLUSTER_CR_2_APPLY}
 		fi
 		$(K8S_CLI) apply -f $${CHECLUSTER_CR_2_APPLY} -n $${ECLIPSE_CHE_NAMESPACE}
 	fi
@@ -902,3 +907,31 @@ wait-eclipseche-version: ## Wait until Eclipse Che given version is up and runni
 		echo "[ERROR] Failed to deploy Eclipse Che '${version}' version"
 		exit 1
 	fi
+
+wait-eclipseche-reconciled: SHELL := /bin/bash
+wait-eclipseche-reconciled: ## Wait until Eclipse Che is reconciled
+	echo "[INFO] Waiting for the CheCluster reconciliation"
+
+	deadline=$$((SECONDS + 600))
+	pods=""
+
+	while (( SECONDS < deadline )); do
+		pods=$$(oc get pod \
+			-l "app.kubernetes.io/component=che-operator" \
+			-n "$(NAMESPACE)" \
+			-o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || pods=""
+
+		# Avoid grep -q: with pipefail, an early grep exit can cause
+		# oc logs to fail with SIGPIPE.
+		if [[ $$(wc -w <<< "$$pods") -eq 1 ]] && \
+			oc logs "$$pods" -n "$(NAMESPACE)" 2>/dev/null | \
+			grep "Successfully reconciled" >/dev/null; then
+			echo "[INFO] CheCluster successfully reconciled"
+			exit 0
+		fi
+
+		sleep 5
+	done
+
+	echo "[ERROR] Timed out waiting for the CheCluster reconciliation"
+	exit 1

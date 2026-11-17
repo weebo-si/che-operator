@@ -1,0 +1,122 @@
+//
+// Copyright (c) 2019-2026 Red Hat, Inc.
+// This program and the accompanying materials are made
+// available under the terms of the Eclipse Public License 2.0
+// which is available at https://www.eclipse.org/legal/epl-2.0/
+//
+// SPDX-License-Identifier: EPL-2.0
+//
+// Contributors:
+//   Red Hat, Inc. - initial API and implementation
+//
+
+package clientwrapper
+
+import (
+	"context"
+
+	"github.com/google/go-cmp/cmp"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+type ClientWrapper interface {
+	// Sync ensures that the object is up to date in the cluster.
+	// Object is created if it does not exist and updated if it exists but is different.
+	// Returns nil if object is in sync.
+	Sync(ctx context.Context, blueprint client.Object, opts ...SyncOption) error
+	// SyncStatus ensures that the status subresource of the object is up to date in the cluster.
+	// Object must exist, otherwise an error is returned.
+	// Returns nil if object is in sync.
+	SyncStatus(ctx context.Context, blueprint client.Object, opts ...SyncOption) error
+	// Create creates object.
+	// Returns nil if object is created otherwise returns error.
+	Create(ctx context.Context, blueprint client.Object, opts ...client.CreateOption) error
+	// CreateIfNotExists creates object if not exists.
+	// Returns nil if object is created or exists otherwise returns error.
+	CreateIfNotExists(ctx context.Context, blueprint client.Object, opts ...client.CreateOption) error
+	// GetIgnoreNotFound gets object.
+	// Returns true if object exists otherwise returns false.
+	// Returns nil if object is retrieved or not found otherwise returns error.
+	GetIgnoreNotFound(ctx context.Context, key client.ObjectKey, objectMeta client.Object, opts ...client.GetOption) (bool, error)
+	// DeleteIgnoreNotFound deletes object.
+	// Returns nil if object is deleted or not found otherwise returns error.
+	DeleteIgnoreNotFound(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error
+	// DeleteByKeyIgnoreNotFound deletes object by key.
+	// The object is fetched from the cluster first, so the object passed in
+	// only needs to carry the type, not the actual content.
+	// Returns nil if object is deleted or not found otherwise returns error.
+	DeleteByKeyIgnoreNotFound(ctx context.Context, key client.ObjectKey, objectMeta client.Object, opts ...client.DeleteOption) error
+	// DeleteAllOf deletes all objects of the given type.
+	// Returns nil if objects are deleted otherwise returns error.
+	DeleteAllOf(ctx context.Context, obj client.Object, opts ...client.DeleteAllOfOption) error
+	// List returns list of runtime objects.
+	// Returns nil if list is retrieved otherwise returns error.
+	List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) ([]runtime.Object, error)
+}
+
+type SyncTarget struct {
+	Object   client.Object
+	Key      types.NamespacedName
+	DiffOpts []cmp.Option
+}
+
+type SyncOption interface {
+	ApplyToSync(*SyncOptions)
+}
+
+type SyncOptions struct {
+	// MergeLabels can be used to merge labels from existing object to the new one
+	MergeLabels bool
+	// MergeAnnotations can be used to merge annotations from existing object to the new one
+	MergeAnnotations bool
+	// PreserveFinalizers can be used to keep the finalizers of the existing object on update,
+	// so that finalizers owned by other controllers are not stripped
+	PreserveFinalizers bool
+	// SuppressDiff can be used to suppress printing diff when object is not in sync
+	SuppressDiff bool
+	// DiffOpts can be used to customize comparison when object is not in sync
+	DiffOpts []cmp.Option
+	// DeleteOpts can be used to customize deletion when object is recreated
+	DeleteOpts []client.DeleteOption
+	// ForceRecreate deletes and re-creates the object instead of updating it when it is not in sync.
+	// This applies to every kind, so it is caller's responsibility.
+	ForceRecreate bool
+}
+
+func (o *SyncOptions) ApplyToSync(so *SyncOptions) {
+	if o.MergeLabels {
+		so.MergeLabels = o.MergeLabels
+	}
+
+	if o.MergeAnnotations {
+		so.MergeAnnotations = o.MergeAnnotations
+	}
+
+	if o.PreserveFinalizers {
+		so.PreserveFinalizers = o.PreserveFinalizers
+	}
+
+	if o.SuppressDiff {
+		so.SuppressDiff = o.SuppressDiff
+	}
+
+	if len(o.DiffOpts) != 0 {
+		so.DiffOpts = o.DiffOpts
+	}
+
+	if len(o.DeleteOpts) != 0 {
+		so.DeleteOpts = o.DeleteOpts
+	}
+
+	if o.ForceRecreate {
+		so.ForceRecreate = o.ForceRecreate
+	}
+}
+
+func (o *SyncOptions) ApplyOptions(opts []SyncOption) {
+	for _, opt := range opts {
+		opt.ApplyToSync(o)
+	}
+}

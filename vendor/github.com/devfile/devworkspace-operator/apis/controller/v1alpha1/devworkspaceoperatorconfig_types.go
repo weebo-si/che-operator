@@ -247,6 +247,15 @@ type WorkspaceConfig struct {
 	// SchedulerName is the name of the pod scheduler for DevWorkspace pods.
 	// If not specified, the pod scheduler is set to the default scheduler on the cluster.
 	SchedulerName string `json:"schedulerName,omitempty"`
+	// PodAffinity defines the pod affinity rules that are applied for workspace pods,
+	// PVC cleanup pods and backup pods.
+	PodAffinity *corev1.PodAffinity `json:"podAffinity,omitempty"`
+	// PodAntiAffinity defines the pod anti-affinity rules that are applied for workspace pods,
+	// PVC cleanup pods and backup pods
+	PodAntiAffinity *corev1.PodAntiAffinity `json:"podAntiAffinity,omitempty"`
+	// TopologySpreadConstraints defines the topology spread constraints that are applied for
+	// workspace pods, PVC cleanup pods and backup pods.
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 	// DefaultContainerResources defines the resource requirements (memory/cpu limit/request) used for
 	// container components that do not define limits or requests. In order to not set a field by default,
 	// the value "0" should be used. By default, the memory limit is 256Mi and the memory request is 128Mi.
@@ -351,14 +360,14 @@ type NetworkPolicyConfig struct {
 	// is denied. If this field is specified as a non-empty list, exactly those rules apply
 	// and the default rules no longer apply.
 	// +kubebuilder:validation:Optional
-	Ingress []networkingv1.NetworkPolicyIngressRule `json:"ingress,omitempty"`
+	Ingress []networkingv1.NetworkPolicyIngressRule `json:"ingress"`
 	// Egress defines the egress rules applied to DevWorkspace pods. If this field is not
 	// specified, the default egress rule of the DevWorkspace Operator applies, which allows
 	// all egress traffic. If this field is specified as an empty list, all egress traffic
 	// from DevWorkspace pods is denied. If this field is specified as a non-empty list,
 	// exactly those rules apply and the default rule no longer applies.
 	// +kubebuilder:validation:Optional
-	Egress []networkingv1.NetworkPolicyEgressRule `json:"egress,omitempty"`
+	Egress []networkingv1.NetworkPolicyEgressRule `json:"egress"`
 }
 
 type Proxy struct {
@@ -438,6 +447,7 @@ type ProjectCloneConfig struct {
 	Image string `json:"image,omitempty"`
 	// ImagePullPolicy configures the imagePullPolicy for the project clone container.
 	// If undefined, the general setting .config.workspace.imagePullPolicy is used instead.
+	// If neither is set, defaults to IfNotPresent.
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 	// Resources defines the resource (cpu, memory) limits and requests for the project
 	// clone container. To explicitly not specify a limit or request, define the resource
@@ -449,7 +459,7 @@ type ProjectCloneConfig struct {
 
 type RestoreConfig struct {
 	// ImagePullPolicy configures the imagePullPolicy for the restore container.
-	// If undefined, the general setting .config.workspace.imagePullPolicy is used instead.
+	// If undefined, defaults to IfNotPresent.
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 	// Resources defines the resource (cpu, memory) limits and requests for the restore
 	// container. To explicitly not specify a limit or request, define the resource

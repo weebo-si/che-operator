@@ -24,9 +24,9 @@ import (
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
 	defaults "github.com/eclipse-che/che-operator/pkg/common/operator-defaults"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy/tls"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -86,8 +86,8 @@ func (d *DevWorkspaceConfigReconciler) Reconcile(cheCtx *chetypes.CheContext) (r
 	return reconcile.Result{}, true, nil
 }
 
-func (d *DevWorkspaceConfigReconciler) Finalize(cheCtx *chetypes.CheContext) bool {
-	return true
+func (d *DevWorkspaceConfigReconciler) Finalize(cheCtx *chetypes.CheContext) error {
+	return nil
 }
 
 func updateWorkspaceConfig(cheCtx *chetypes.CheContext, operatorConfig *controllerv1alpha1.OperatorConfiguration) error {
@@ -104,6 +104,8 @@ func updateWorkspaceConfig(cheCtx *chetypes.CheContext, operatorConfig *controll
 	updateWorkspaceServiceAccountConfig(devEnvironments, operatorConfig.Workspace)
 
 	updateWorkspacePodSchedulerNameConfig(devEnvironments, operatorConfig.Workspace)
+
+	updateScheduling(cheCtx, operatorConfig.Workspace)
 
 	updateWorkspaceRuntimeClassNameConfig(devEnvironments, operatorConfig.Workspace)
 
@@ -135,6 +137,10 @@ func updateWorkspaceConfig(cheCtx *chetypes.CheContext, operatorConfig *controll
 		return err
 	}
 
+	if err := updateNetworkPolicy(cheCtx, operatorConfig.Workspace); err != nil {
+		return err
+	}
+
 	// If the CheCluster has a configured proxy, or if the Che Operator has detected a proxy configuration,
 	// we need to disable automatic proxy handling in the DevWorkspace Operator as its implementation collides
 	// with ours -- they set environment variables the deployment spec explicitly, which overrides the proxy-settings
@@ -146,7 +152,7 @@ func updateWorkspaceConfig(cheCtx *chetypes.CheContext, operatorConfig *controll
 		disableDWOProxy(operatorConfig.Routing)
 	}
 
-	operatorConfig.Workspace.DeploymentStrategy = v1.DeploymentStrategyType(utils.GetValue(string(devEnvironments.DeploymentStrategy), constants.DefaultDeploymentStrategy))
+	operatorConfig.Workspace.DeploymentStrategy = v1.DeploymentStrategyType(utils.ValueOrDef(string(devEnvironments.DeploymentStrategy), constants.DefaultDeploymentStrategy))
 	return nil
 }
 
@@ -193,7 +199,7 @@ func updateStartTimeout(operatorConfig *controllerv1alpha1.OperatorConfiguration
 }
 
 func updateWorkspaceStorageConfig(devEnvironments *chev2.CheClusterDevEnvironments, workspaceConfig *controllerv1alpha1.WorkspaceConfig) error {
-	pvcStrategy := utils.GetValue(devEnvironments.Storage.PvcStrategy, constants.DefaultPvcStorageStrategy)
+	pvcStrategy := utils.ValueOrDef(devEnvironments.Storage.PvcStrategy, constants.DefaultPvcStorageStrategy)
 	isPerWorkspacePVCStorageStrategy := pvcStrategy == constants.PerWorkspacePVCStorageStrategy
 	pvc := map[string]*chev2.PVC{
 		constants.PerUserPVCStorageStrategy:      devEnvironments.Storage.PerUserStrategyPvcConfig,

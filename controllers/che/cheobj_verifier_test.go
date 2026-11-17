@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	chev2 "github.com/eclipse-che/che-operator/api/v2"
+	"github.com/eclipse-che/che-operator/pkg/common/constants"
 	defaults "github.com/eclipse-che/che-operator/pkg/common/operator-defaults"
 	"github.com/eclipse-che/che-operator/pkg/common/test"
 	"github.com/stretchr/testify/assert"
@@ -31,7 +32,6 @@ func TestIsTrustedBundleConfigMap(t *testing.T) {
 		initObjects             []client.Object
 		objNamespace            string
 		objLabels               map[string]string
-		watchNamespace          string
 		expectedIsEclipseCheObj bool
 	}
 
@@ -55,14 +55,12 @@ func TestIsTrustedBundleConfigMap(t *testing.T) {
 			name:                    "Cluster scope object",
 			initObjects:             []client.Object{},
 			objNamespace:            "",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: false,
 		},
 		{
 			name:                    "Object in 'eclipse-che' namespace",
 			initObjects:             []client.Object{},
 			objNamespace:            "eclipse-che",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: true,
 		},
 		{
@@ -70,45 +68,30 @@ func TestIsTrustedBundleConfigMap(t *testing.T) {
 			initObjects:             []client.Object{},
 			objLabels:               map[string]string{"app.kubernetes.io/part-of": "che.eclipse.org"},
 			objNamespace:            "eclipse-che",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: false,
 		},
 		{
 			name:                    "Object in another namespace than 'eclipse-che'",
 			initObjects:             []client.Object{},
 			objNamespace:            "test-eclipse-che",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: false,
-		},
-		{
-			name: "Object in 'eclipse-che' namespace, several checluster CR",
-			initObjects: []client.Object{
-				// checluster CR in `default` namespace
-				&chev2.CheCluster{ObjectMeta: metav1.ObjectMeta{Name: "eclipse-che", Namespace: "default"}},
-			},
-			objNamespace:            "eclipse-che",
-			watchNamespace:          "eclipse-che",
-			expectedIsEclipseCheObj: true,
 		},
 		{
 			name:                    "Cluster scope object, all-namespaces mode",
 			initObjects:             []client.Object{},
 			objNamespace:            "",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: false,
 		},
 		{
 			name:                    "Object in 'eclipse-che' namespace, all-namespaces mode",
 			initObjects:             []client.Object{},
 			objNamespace:            "eclipse-che",
-			watchNamespace:          "",
 			expectedIsEclipseCheObj: true,
 		},
 		{
 			name:                    "Object in another namespace than 'eclipse-che', all-namespaces mode",
 			initObjects:             []client.Object{},
 			objNamespace:            "test-eclipse-che",
-			watchNamespace:          "",
 			expectedIsEclipseCheObj: false,
 		},
 	}
@@ -123,7 +106,7 @@ func TestIsTrustedBundleConfigMap(t *testing.T) {
 				newTestObject.Labels = testCase.objLabels
 			}
 
-			isEclipseCheObj, req := IsTrustedBundleConfigMap(cheCtx.ClusterAPI.Client, testCase.watchNamespace, newTestObject)
+			isEclipseCheObj, req := IsTrustedBundleConfigMap(cheCtx.Context, cheCtx.ClusterAPI.Client, newTestObject)
 
 			assert.Equal(t, testCase.expectedIsEclipseCheObj, isEclipseCheObj)
 			if isEclipseCheObj {
@@ -139,7 +122,6 @@ func TestIsEclipseCheRelatedObj(t *testing.T) {
 		name                    string
 		initObjects             []client.Object
 		objNamespace            string
-		watchNamespace          string
 		expectedIsEclipseCheObj bool
 	}
 
@@ -162,52 +144,36 @@ func TestIsEclipseCheRelatedObj(t *testing.T) {
 			name:                    "Cluster scope object",
 			initObjects:             []client.Object{},
 			objNamespace:            "",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: false,
 		},
 		{
 			name:                    "Object in 'eclipse-che' namespace",
 			initObjects:             []client.Object{},
 			objNamespace:            "eclipse-che",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: true,
 		},
 		{
 			name:                    "Object in another namespace than 'eclipse-che'",
 			initObjects:             []client.Object{},
 			objNamespace:            "test-eclipse-che",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: false,
-		},
-		{
-			name: "Object in 'eclipse-che' namespace, several checluster CR",
-			initObjects: []client.Object{
-				// checluster CR in `default` namespace
-				&chev2.CheCluster{ObjectMeta: metav1.ObjectMeta{Name: "eclipse-che", Namespace: "default"}},
-			},
-			objNamespace:            "eclipse-che",
-			watchNamespace:          "eclipse-che",
-			expectedIsEclipseCheObj: true,
 		},
 		{
 			name:                    "Cluster scope object, all-namespaces mode",
 			initObjects:             []client.Object{},
 			objNamespace:            "",
-			watchNamespace:          "eclipse-che",
 			expectedIsEclipseCheObj: false,
 		},
 		{
 			name:                    "Object in 'eclipse-che' namespace, all-namespaces mode",
 			initObjects:             []client.Object{},
 			objNamespace:            "eclipse-che",
-			watchNamespace:          "",
 			expectedIsEclipseCheObj: true,
 		},
 		{
 			name:                    "Object in another namespace than 'eclipse-che', all-namespaces mode",
 			initObjects:             []client.Object{},
 			objNamespace:            "test-eclipse-che",
-			watchNamespace:          "",
 			expectedIsEclipseCheObj: false,
 		},
 	}
@@ -217,7 +183,7 @@ func TestIsEclipseCheRelatedObj(t *testing.T) {
 			cheCtx := test.NewCtxBuilder().WithObjects(testCase.initObjects...).Build()
 
 			testObject.Namespace = testCase.objNamespace
-			isEclipseCheObj, req := IsEclipseCheRelatedObj(cheCtx.ClusterAPI.Client, testCase.watchNamespace, testObject)
+			isEclipseCheObj, req := IsEclipseCheRelatedObj(cheCtx.Context, cheCtx.ClusterAPI.Client, testObject)
 
 			assert.Equal(t, testCase.expectedIsEclipseCheObj, isEclipseCheObj)
 			if isEclipseCheObj {
@@ -225,5 +191,83 @@ func TestIsEclipseCheRelatedObj(t *testing.T) {
 				assert.Equal(t, req.Name, cheCtx.CheCluster.Name)
 			}
 		})
+	}
+}
+
+func TestMapDevWorkspaceOperatorPodToCheCluster(t *testing.T) {
+	type testCase struct {
+		name                              string
+		obj                               client.Object
+		expectedIsDevWorkspaceOperatorPod bool
+	}
+
+	testCases := []testCase{
+		{
+			name:                              "DevWorkspace Operator controller pod",
+			obj:                               test.NewDWOPod("devworkspace-controller", "project-clone:dwo"),
+			expectedIsDevWorkspaceOperatorPod: true,
+		},
+		{
+			name:                              "DevWorkspace Operator webhook server pod",
+			obj:                               newDevWorkspaceOperatorWebhookServerPod(),
+			expectedIsDevWorkspaceOperatorPod: false,
+		},
+		{
+			name: "ConfigMap with DevWorkspace Operator controller labels",
+			obj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "devworkspace-controller",
+					Labels:    test.NewDWOPod("devworkspace-controller", "project-clone:dwo").Labels,
+				},
+			},
+			expectedIsDevWorkspaceOperatorPod: false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			cheCluster := &chev2.CheCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "eclipse-che", Namespace: "eclipse-che"},
+			}
+			cheCtx := test.NewCtxBuilder().WithCheCluster(cheCluster).Build()
+
+			isDevWorkspaceOperatorPod, request := mapDevWorkspaceOperatorPodToCheCluster(
+				cheCtx.Context,
+				cheCtx.ClusterAPI.Client,
+				testCase.obj,
+			)
+
+			assert.Equal(t, testCase.expectedIsDevWorkspaceOperatorPod, isDevWorkspaceOperatorPod)
+			if testCase.expectedIsDevWorkspaceOperatorPod {
+				assert.Equal(t, "eclipse-che", request.Namespace)
+				assert.Equal(t, "eclipse-che", request.Name)
+			}
+		})
+	}
+}
+
+func TestMapDevWorkspaceOperatorPodToCheClusterWithoutCheCluster(t *testing.T) {
+	cheCtx := test.NewCtxBuilder().WithCheCluster(nil).Build()
+
+	isDevWorkspaceOperatorPod, _ := mapDevWorkspaceOperatorPodToCheCluster(
+		cheCtx.Context,
+		cheCtx.ClusterAPI.Client,
+		test.NewDWOPod("devworkspace-controller", "project-clone:dwo"),
+	)
+
+	assert.False(t, isDevWorkspaceOperatorPod)
+}
+
+func newDevWorkspaceOperatorWebhookServerPod() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "devworkspace-webhook-server",
+			Namespace: "devworkspace-controller",
+			Labels: map[string]string{
+				constants.KubernetesNameLabelKey:   "devworkspace-webhook-server",
+				constants.KubernetesPartOfLabelKey: constants.DevWorkspaceOperatorName,
+			},
+		},
 	}
 }

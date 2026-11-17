@@ -23,8 +23,8 @@ import (
 	"strings"
 
 	"github.com/eclipse-che/che-operator/pkg/common/diffs"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
@@ -81,10 +81,8 @@ func (c *CertificatesReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconci
 		return reconcile.Result{}, false, err
 	}
 
-	if cheCtx.IsSelfSignedCertificate {
-		if done, err := c.syncSelfSignedCertificates(cheCtx); !done {
-			return reconcile.Result{}, false, err
-		}
+	if done, err := c.syncSelfSignedCertificates(cheCtx); !done {
+		return reconcile.Result{}, false, err
 	}
 
 	if cheCtx.Authentication.IssuerCA != "" {
@@ -100,8 +98,8 @@ func (c *CertificatesReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconci
 	return reconcile.Result{}, true, nil
 }
 
-func (c *CertificatesReconciler) Finalize(cheCtx *chetypes.CheContext) bool {
-	return true
+func (c *CertificatesReconciler) Finalize(cheCtx *chetypes.CheContext) error {
+	return nil
 }
 
 func (c *CertificatesReconciler) syncOpenShiftCABundleCertificates(cheCtx *chetypes.CheContext) (bool, error) {
@@ -128,8 +126,8 @@ func (c *CertificatesReconciler) syncOpenShiftCABundleCertificates(cheCtx *chety
 		}
 	}
 
-	openShiftCaBundleCM.Labels = utils.GetMapOrDefault(openShiftCaBundleCM.Labels, map[string]string{})
-	utils.AddMap(openShiftCaBundleCM.Labels, deploy.GetLabels(constants.CheCABundle))
+	openShiftCaBundleCM.Labels = utils.NonNilMap(openShiftCaBundleCM.Labels)
+	maps.Copy(openShiftCaBundleCM.Labels, deploy.GetLabels(constants.CheCABundle))
 
 	if cheCtx.CheCluster.IsDisableWorkspaceCaBundleMount() {
 		// Remove annotation to stop OpenShift network operator from injecting certificates
@@ -151,7 +149,7 @@ func (c *CertificatesReconciler) syncOpenShiftCABundleCertificates(cheCtx *chety
 
 			trustedCACM := &corev1.ConfigMap{}
 			if exists, err := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(context.TODO(), trustedCACMKey, trustedCACM); exists {
-				openShiftCaBundleCM.Data = utils.GetMapOrDefault(openShiftCaBundleCM.Data, map[string]string{})
+				openShiftCaBundleCM.Data = utils.NonNilMap(openShiftCaBundleCM.Data)
 				openShiftCaBundleCM.Data["ca-bundle.crt"] = trustedCACM.Data["ca-bundle.crt"]
 			} else if err != nil {
 				return false, err
@@ -174,7 +172,7 @@ func (c *CertificatesReconciler) syncOpenShiftCABundleCertificates(cheCtx *chety
 	err = cheCtx.ClusterAPI.ClientWrapper.Sync(
 		context.TODO(),
 		openShiftCaBundleCM,
-		&k8sclient.SyncOptions{
+		&clientwrapper.SyncOptions{
 			DiffOpts: diffs.ConfigMap(mandatoryLabelKeys, nil),
 		})
 
@@ -208,7 +206,7 @@ func (c *CertificatesReconciler) syncKubernetesCABundleCertificates(cheCtx *chet
 	err = cheCtx.ClusterAPI.ClientWrapper.Sync(
 		context.TODO(),
 		kubernetesCaBundleCM,
-		&k8sclient.SyncOptions{
+		&clientwrapper.SyncOptions{
 			DiffOpts: diffs.ConfigMap(deploy.GetLabelKeys(), nil),
 		},
 	)
@@ -248,7 +246,7 @@ func (c *CertificatesReconciler) syncGitTrustedCertificates(cheCtx *chetypes.Che
 		err = cheCtx.ClusterAPI.ClientWrapper.Sync(
 			context.TODO(),
 			gitTrustedCertsCM,
-			&k8sclient.SyncOptions{
+			&clientwrapper.SyncOptions{
 				DiffOpts: diffs.ConfigMap(
 					[]string{
 						constants.KubernetesPartOfLabelKey,
@@ -269,11 +267,11 @@ func (c *CertificatesReconciler) syncGitTrustedCertificates(cheCtx *chetypes.Che
 func (c *CertificatesReconciler) syncSelfSignedCertificates(cheCtx *chetypes.CheContext) (bool, error) {
 	selfSignedCertSecret := &corev1.Secret{}
 	selfSignedCertSecretKey := types.NamespacedName{
-		Name:      constants.DefaultSelfSignedCertificateSecretName,
+		Name:      constants.SelfSignedCertificateSecretName,
 		Namespace: cheCtx.CheCluster.Namespace,
 	}
 
-	exists, err := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(context.TODO(), selfSignedCertSecretKey, selfSignedCertSecret)
+	exists, err := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(cheCtx.Context, selfSignedCertSecretKey, selfSignedCertSecret)
 	if !exists {
 		return err == nil, err
 	}
@@ -285,7 +283,7 @@ func (c *CertificatesReconciler) syncSelfSignedCertificates(cheCtx *chetypes.Che
 				APIVersion: "v1",
 			},
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        constants.DefaultSelfSignedCertificateSecretName,
+				Name:        constants.SelfSignedCertificateSecretName,
 				Namespace:   cheCtx.CheCluster.Namespace,
 				Labels:      deploy.GetLabels(constants.CheCABundle),
 				Annotations: map[string]string{},
@@ -298,9 +296,9 @@ func (c *CertificatesReconciler) syncSelfSignedCertificates(cheCtx *chetypes.Che
 		}
 
 		err = cheCtx.ClusterAPI.ClientWrapper.Sync(
-			context.TODO(),
+			cheCtx.Context,
 			selfSignedCertCM,
-			&k8sclient.SyncOptions{
+			&clientwrapper.SyncOptions{
 				DiffOpts: diffs.ConfigMap(deploy.GetLabelKeys(), nil),
 			})
 	}
@@ -333,7 +331,7 @@ func (c *CertificatesReconciler) syncKubernetesRootCertificates(cheCtx *chetypes
 	err = cheCtx.ClusterAPI.NonCachingClientWrapper.Sync(
 		context.TODO(),
 		kubeRootCertsCM,
-		&k8sclient.SyncOptions{
+		&clientwrapper.SyncOptions{
 			DiffOpts: diffs.ConfigMap(
 				[]string{
 					constants.KubernetesPartOfLabelKey,
@@ -368,7 +366,7 @@ func (c *CertificatesReconciler) syncOIDCIssuerCertificate(cheCtx *chetypes.CheC
 	err := cheCtx.ClusterAPI.ClientWrapper.Sync(
 		context.TODO(),
 		cm,
-		&k8sclient.SyncOptions{
+		&clientwrapper.SyncOptions{
 			DiffOpts: diffs.ConfigMap(deploy.GetLabelKeys(), nil),
 		},
 	)
@@ -451,7 +449,7 @@ func (c *CertificatesReconciler) syncCheCABundleCerts(cheCtx *chetypes.CheContex
 	err = cheCtx.ClusterAPI.ClientWrapper.Sync(
 		context.TODO(),
 		mergedCABundlesCM,
-		&k8sclient.SyncOptions{
+		&clientwrapper.SyncOptions{
 			DiffOpts: diffs.ConfigMap(deploy.GetLabelsAndAnnotations(mergedCABundlesCM)),
 		},
 	)

@@ -18,9 +18,9 @@ import (
 
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
-	"github.com/eclipse-che/che-operator/pkg/deploy"
 	"github.com/eclipse-che/che-operator/pkg/deploy/gateway"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +37,9 @@ type OpenVSXServerReconciler struct {
 	// extensionsVersion tracks the last synced ConfigMap version to avoid unnecessary Job churn.
 	// Resets on operator restart, which is safe - the Job is idempotent.
 	extensionsVersion string
+	// extensionsProxyFingerprint tracks the last proxy settings applied to the publisher Job
+	// so proxy-only changes recreate the Job without requiring a ConfigMap edit.
+	extensionsProxyFingerprint string
 }
 
 var (
@@ -48,7 +51,8 @@ var (
 
 func NewOpenVSXServerReconciler() *OpenVSXServerReconciler {
 	return &OpenVSXServerReconciler{
-		extensionsVersion: "",
+		extensionsVersion:          "",
+		extensionsProxyFingerprint: "",
 	}
 }
 
@@ -56,6 +60,7 @@ func (r *OpenVSXServerReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconc
 	if !cheCtx.CheCluster.IsInternalOpenVSXRegistryEnabled() {
 		deleteResources(cheCtx)
 		r.extensionsVersion = ""
+		r.extensionsProxyFingerprint = ""
 		return reconcile.Result{}, true, nil
 	}
 
@@ -112,7 +117,8 @@ func (r *OpenVSXServerReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconc
 	if err != nil {
 		return reconcile.Result{}, false, fmt.Errorf("failed to get Extensions Version: %w", err)
 	}
-	if extensionsVersion != r.extensionsVersion {
+	proxyFingerprint := getProxyFingerprint(cheCtx.Proxy)
+	if extensionsVersion != r.extensionsVersion || proxyFingerprint != r.extensionsProxyFingerprint {
 		done, err = r.syncExtensions(cheCtx)
 		if !done {
 			if err != nil {
@@ -122,9 +128,18 @@ func (r *OpenVSXServerReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconc
 		}
 
 		r.extensionsVersion = extensionsVersion
+		r.extensionsProxyFingerprint = proxyFingerprint
 	}
 
 	return reconcile.Result{}, true, nil
+}
+
+// getProxyFingerprint returns a stable string for the proxy settings injected into the publisher Job.
+func getProxyFingerprint(proxy *chetypes.Proxy) string {
+	if proxy == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s|%s|%s", proxy.HttpProxy, proxy.HttpsProxy, proxy.NoProxy)
 }
 
 func deleteResources(cheCtx *chetypes.CheContext) {
@@ -194,12 +209,9 @@ func deleteResources(cheCtx *chetypes.CheContext) {
 		logger.Error(err, "Failed to delete PVC", "Name", objKey.Name)
 	}
 
-	if cheCtx.CheCluster.Status.OpenVSXURL != "" {
-		cheCtx.CheCluster.Status.OpenVSXURL = ""
-
-		if err = deploy.UpdateCheCRStatus(cheCtx, "status: OpenVSXURL", ""); err != nil {
-			logger.Error(err, "Failed to update status for OpenVSXURL")
-		}
+	cheCtx.CheCluster.Status.OpenVSXURL = ""
+	if err := resources.CheCluster.SyncStatus(cheCtx); err != nil {
+		logger.Error(err, "Failed to update status for OpenVSXURL")
 	}
 }
 
@@ -216,6 +228,6 @@ func (r *OpenVSXServerReconciler) isServerReady(cheCtx *chetypes.CheContext) boo
 	return actual.Status.AvailableReplicas > 0 && actual.Status.UnavailableReplicas == 0
 }
 
-func (r *OpenVSXServerReconciler) Finalize(_ *chetypes.CheContext) bool {
-	return true
+func (r *OpenVSXServerReconciler) Finalize(_ *chetypes.CheContext) error {
+	return nil
 }

@@ -18,9 +18,9 @@ import (
 
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -61,8 +61,8 @@ func (r *OpenVSXSecretReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconc
 	return reconcile.Result{}, true, nil
 }
 
-func (r *OpenVSXSecretReconciler) Finalize(_ *chetypes.CheContext) bool {
-	return true
+func (r *OpenVSXSecretReconciler) Finalize(_ *chetypes.CheContext) error {
+	return nil
 }
 
 func (p *OpenVSXSecretReconciler) syncSecret(cheCtx *chetypes.CheContext) error {
@@ -80,11 +80,11 @@ func (p *OpenVSXSecretReconciler) syncSecret(cheCtx *chetypes.CheContext) error 
 		Data: map[string][]byte{
 			"database-name":           []byte("openvsx"),
 			"database-user":           []byte("openvsx"),
-			"database-password":       []byte(utils.GeneratePassword(16)),
+			"database-password":       []byte(utils.RandomString(16)),
 			"openvsx-publisher-name":  []byte("openvsx-publisher"),
-			"openvsx-publisher-token": []byte(utils.GeneratePassword(32)),
+			"openvsx-publisher-token": []byte(utils.RandomString(32)),
 			"openvsx-admin-name":      []byte("openvsx-admin"),
-			"openvsx-admin-token":     []byte(utils.GeneratePassword(32)),
+			"openvsx-admin-token":     []byte(utils.RandomString(32)),
 		},
 	}
 

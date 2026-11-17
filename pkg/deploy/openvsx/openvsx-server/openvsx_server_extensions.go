@@ -17,11 +17,12 @@ import (
 
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
 	defaults "github.com/eclipse-che/che-operator/pkg/common/operator-defaults"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
 	"github.com/eclipse-che/che-operator/pkg/deploy/openvsx"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -112,7 +113,7 @@ func (r *OpenVSXServerReconciler) syncExtensions(cheCtx *chetypes.CheContext) (b
 									ReadOnly:  true,
 								},
 							},
-							Env: []corev1.EnvVar{
+							Env: append([]corev1.EnvVar{
 								{
 									Name:  "OVSX_REGISTRY_URL",
 									Value: openvsx.GetOpenVSXServerServiceURL(cheCtx),
@@ -122,7 +123,7 @@ func (r *OpenVSXServerReconciler) syncExtensions(cheCtx *chetypes.CheContext) (b
 									Value: cheCtx.CheHost,
 								},
 								utils.EnvVarFromSecret("OVSX_PAT", credentialsSecret, "openvsx-publisher-token"),
-							},
+							}, deploy.GetProxyEnvVars(cheCtx.Proxy)...),
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceMemory: resource.MustParse(constants.OpenVSXExtensionJobMemoryRequest),
@@ -160,7 +161,7 @@ func (r *OpenVSXServerReconciler) syncExtensions(cheCtx *chetypes.CheContext) (b
 		},
 	}
 
-	deploy.EnsurePodSecurityStandards(
+	resources.Pod.EnsureSecurityStandards(
 		&job.Spec.Template.Spec,
 		constants.DefaultSecurityContextRunAsUser,
 		constants.DefaultSecurityContextFsGroup,
@@ -173,7 +174,7 @@ func (r *OpenVSXServerReconciler) syncExtensions(cheCtx *chetypes.CheContext) (b
 	err := cheCtx.ClusterAPI.ClientWrapper.Sync(
 		cheCtx.Context,
 		job,
-		&k8sclient.SyncOptions{
+		&clientwrapper.SyncOptions{
 			DeleteOpts: []client.DeleteOption{client.PropagationPolicy(metav1.DeletePropagationBackground)},
 		},
 	)

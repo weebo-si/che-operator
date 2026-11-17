@@ -88,7 +88,7 @@ func ReadCheClusterProxyConfiguration(cheCtx *chetypes.CheContext) (*chetypes.Pr
 	proxyUser := ""
 	proxyPassword := ""
 
-	proxyCredentialsSecretName := utils.GetValue(cheCtx.CheCluster.Spec.Components.CheServer.Proxy.CredentialsSecretName, constants.DefaultProxyCredentialsSecret)
+	proxyCredentialsSecretName := utils.ValueOrDef(cheCtx.CheCluster.Spec.Components.CheServer.Proxy.CredentialsSecretName, constants.DefaultProxyCredentialsSecret)
 	proxyCredentialsSecret := &corev1.Secret{}
 	exists, err := cheCtx.ClusterAPI.ClientWrapper.GetIgnoreNotFound(
 		cheCtx.Context,
@@ -170,6 +170,42 @@ func removeProtocolPrefix(url string) string {
 		return strings.TrimPrefix(url, "http://")
 	}
 	return url
+}
+
+// GetProxyEnvVars returns HTTP proxy environment variables for operand containers.
+// Values come from the resolved CheContext proxy (cluster-wide and/or CheCluster override),
+// matching the variables injected into other components such as the dashboard.
+func GetProxyEnvVars(proxy *chetypes.Proxy) []corev1.EnvVar {
+	if proxy == nil {
+		return []corev1.EnvVar{}
+	}
+
+	return []corev1.EnvVar{
+		{
+			Name:  "http_proxy",
+			Value: proxy.HttpProxy,
+		},
+		{
+			Name:  "https_proxy",
+			Value: proxy.HttpsProxy,
+		},
+		{
+			Name:  "no_proxy",
+			Value: proxy.NoProxy,
+		},
+		{
+			Name:  "HTTP_PROXY",
+			Value: proxy.HttpProxy,
+		},
+		{
+			Name:  "HTTPS_PROXY",
+			Value: proxy.HttpsProxy,
+		},
+		{
+			Name:  "NO_PROXY",
+			Value: proxy.NoProxy,
+		},
+	}
 }
 
 // ConfigureProxy adds existing proxy configuration into provided transport object.

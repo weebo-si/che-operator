@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/eclipse-che/che-operator/controllers/namespacecache"
-	k8sclient "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
+	"github.com/eclipse-che/che-operator/pkg/provision/clientwrapper"
 	"k8s.io/utils/ptr"
 
 	"github.com/eclipse-che/che-operator/pkg/common/test"
@@ -107,7 +107,7 @@ func setupCheCluster(t *testing.T, ctx context.Context, cl client.Client, cheNam
 	// also create the self-signed-certificate secret to pretend we have TLS set up
 	cert := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      constants.DefaultSelfSignedCertificateSecretName,
+			Name:      constants.SelfSignedCertificateSecretName,
 			Namespace: cheNamespaceName,
 		},
 		Data: map[string][]byte{
@@ -162,8 +162,8 @@ func setup(infraType infrastructure.Type, objs ...client.Object) (*runtime.Schem
 	r := &CheUserNamespaceReconciler{
 		client:                 cl,
 		nonCachedClient:        cl,
-		clientWrapper:          k8sclient.NewK8sClient(cl, scheme),
-		nonCachedClientWrapper: k8sclient.NewK8sClient(cl, scheme),
+		clientWrapper:          clientwrapper.New(cl, scheme),
+		nonCachedClientWrapper: clientwrapper.New(cl, scheme),
 		scheme:                 scheme,
 		namespaceCache: &namespacecache.NamespaceCache{
 			Client:          cl,

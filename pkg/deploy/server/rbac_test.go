@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/eclipse-che/che-operator/pkg/deploy"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	chev2 "github.com/eclipse-che/che-operator/api/v2"
@@ -74,8 +73,8 @@ func TestSyncPermissions(t *testing.T) {
 			}
 			assert.True(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: "test-role"}, &rbac.ClusterRoleBinding{}))
 
-			done = reconciler.deletePermissions(cheCtx)
-			assert.True(t, done)
+			err = reconciler.deletePermissions(cheCtx)
+			assert.NoError(t, err)
 
 			for _, name := range names {
 				assert.False(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: name}, &rbac.ClusterRole{}))
@@ -109,9 +108,6 @@ func TestSyncPermissionsWhenCheClusterUpdated(t *testing.T) {
 	assert.True(t, done)
 	assert.NoError(t, err)
 
-	err = deploy.ReloadCheClusterCR(cheCtx)
-	assert.NoError(t, err)
-
 	assert.True(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: "test-role"}, &rbac.ClusterRoleBinding{}))
 	assert.Equal(t, cheCtx.CheCluster.Finalizers, []string{"test-role.crb.finalizers.che.eclipse.org"})
 
@@ -123,6 +119,6 @@ func TestSyncPermissionsWhenCheClusterUpdated(t *testing.T) {
 	assert.True(t, done)
 	assert.NoError(t, err)
 
-	assert.False(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Namespace: "eclipse-che", Name: "test-role"}, &rbac.ClusterRoleBinding{}))
+	assert.False(t, test.IsObjectExists(cheCtx.ClusterAPI.Client, types.NamespacedName{Name: "test-role"}, &rbac.ClusterRoleBinding{}))
 	assert.Empty(t, cheCtx.CheCluster.Finalizers)
 }

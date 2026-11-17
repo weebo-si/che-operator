@@ -13,7 +13,6 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -21,9 +20,10 @@ import (
 	"github.com/devfile/devworkspace-operator/pkg/infrastructure"
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	defaults "github.com/eclipse-che/che-operator/pkg/common/operator-defaults"
-	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
 	"github.com/eclipse-che/che-operator/pkg/deploy"
+	"github.com/eclipse-che/che-operator/pkg/provision/resources"
+	"github.com/eclipse-che/che-operator/pkg/reconciler"
 	routev1 "github.com/openshift/api/route/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,9 +40,9 @@ func NewBaseDomainReconciler() *BaseDomainReconciler {
 }
 
 func (r *BaseDomainReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconcile.Result, bool, error) {
-	workspaceBaseDomain := utils.GetValue(
+	workspaceBaseDomain := utils.ValueOrDef(
 		cheCtx.CheCluster.Spec.Components.CheServer.ExtraProperties["CHE_INFRA_OPENSHIFT_ROUTE_HOST_DOMAIN__SUFFIX"],
-		cheCtx.CheCluster.Spec.Networking.Domain, // must be set for Kubernetes, see CheClusterValidator
+		cheCtx.CheCluster.Spec.Networking.Domain, // must be set for Kubernetes, validated by the CheCluster webhook
 	)
 
 	if workspaceBaseDomain == "" {
@@ -63,18 +63,16 @@ func (r *BaseDomainReconciler) Reconcile(cheCtx *chetypes.CheContext) (reconcile
 		return reconcile.Result{}, false, fmt.Errorf("unable to detect base domain")
 	}
 
-	if cheCtx.CheCluster.Status.WorkspaceBaseDomain != workspaceBaseDomain {
-		cheCtx.CheCluster.Status.WorkspaceBaseDomain = workspaceBaseDomain
-		if err := deploy.UpdateCheCRStatus(cheCtx, "WorkspaceBaseDomain", workspaceBaseDomain); err != nil {
-			return reconcile.Result{}, false, err
-		}
+	cheCtx.CheCluster.Status.WorkspaceBaseDomain = workspaceBaseDomain
+	if err := resources.CheCluster.SyncStatus(cheCtx); err != nil {
+		return reconcile.Result{}, false, err
 	}
 
 	return reconcile.Result{}, true, nil
 }
 
-func (r *BaseDomainReconciler) Finalize(cheCtx *chetypes.CheContext) bool {
-	return true
+func (r *BaseDomainReconciler) Finalize(cheCtx *chetypes.CheContext) error {
+	return nil
 }
 
 // Tries to autodetect the route base domain.
@@ -95,7 +93,7 @@ func (r *BaseDomainReconciler) detectOpenShiftRouteBaseDomain(cheCtx *chetypes.C
 	}
 
 	// We don't use ClientWrapper here not to print logs (improve in the future)
-	if err := cheCtx.ClusterAPI.Client.Create(context.TODO(), testRoute); err != nil {
+	if err := cheCtx.ClusterAPI.Client.Create(cheCtx.Context, testRoute); err != nil {
 		if !errors.IsAlreadyExists(err) {
 			return "", err
 		}
@@ -104,7 +102,7 @@ func (r *BaseDomainReconciler) detectOpenShiftRouteBaseDomain(cheCtx *chetypes.C
 	// Re-read the route to get the Host field populated by the OpenShift router
 	route := &routev1.Route{}
 	routeKey := types.NamespacedName{Name: name, Namespace: cheCtx.CheCluster.Namespace}
-	if err := cheCtx.ClusterAPI.Client.Get(context.TODO(), routeKey, route); err != nil {
+	if err := cheCtx.ClusterAPI.Client.Get(cheCtx.Context, routeKey, route); err != nil {
 		if errors.IsNotFound(err) {
 			// Route is not ready
 			return "", nil
@@ -114,8 +112,13 @@ func (r *BaseDomainReconciler) detectOpenShiftRouteBaseDomain(cheCtx *chetypes.C
 	}
 
 	defer func() {
-		if err := cheCtx.ClusterAPI.Client.Delete(context.TODO(), route); err != nil {
-			log.Error(err, "unable to delete test route %s", name)
+		if err := cheCtx.ClusterAPI.Client.Delete(cheCtx.Context, route); err != nil {
+			if errors.IsNotFound(err) {
+				// Route is already deleted or still terminating from a previous reconcile
+				return
+			}
+
+			log.Error(err, "failed to delete test Route", "name", name)
 		}
 	}()
 

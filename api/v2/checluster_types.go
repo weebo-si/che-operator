@@ -47,7 +47,7 @@ type CheClusterSpec struct {
 	// +optional
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,order=1
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Development environments"
-	// +kubebuilder:default:={storage: {pvcStrategy: per-user}, defaultNamespace: {template: <username>-che, autoProvision: true}, secondsOfInactivityBeforeIdling:1800, secondsOfRunBeforeIdling:-1, startTimeoutSeconds:300, maxNumberOfWorkspacesPerUser:-1, disableContainerRunCapabilities:true, persistUserHome: {enabled: true}}
+	// +kubebuilder:default:={storage: {pvcStrategy: per-user}, defaultNamespace: {template: <username>-che, autoProvision: true}, secondsOfInactivityBeforeIdling:3600, secondsOfRunBeforeIdling:-1, startTimeoutSeconds:300, maxNumberOfWorkspacesPerUser:-1, disableContainerRunCapabilities:true, persistUserHome: {enabled: true}}
 	DevEnvironments CheClusterDevEnvironments `json:"devEnvironments"`
 	// Che components configuration.
 	// +optional
@@ -115,6 +115,18 @@ type CheClusterDevEnvironments struct {
 	// The pod tolerations of the workspace pods limit where the workspace pods can run.
 	// +optional
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// The pod affinity of the workspace pods affects where the workspace pods are scheduled.
+	// It is applied to workspace pods, PVC cleanup pods and backup pods.
+	// +optional
+	PodAffinity *corev1.PodAffinity `json:"podAffinity,omitempty"`
+	// The pod anti-affinity of the workspace pods affects where the workspace pods are scheduled.
+	// It is applied to workspace pods, PVC cleanup pods and backup pods.
+	// +optional
+	PodAntiAffinity *corev1.PodAntiAffinity `json:"podAntiAffinity,omitempty"`
+	// The topology spread constraints of the workspace pods affect where the workspace pods are scheduled.
+	// They are applied to workspace pods, PVC cleanup pods and backup pods.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 	// User's default namespace.
 	// +optional
 	// +kubebuilder:default:={template: <username>-che, autoProvision: true}
@@ -152,7 +164,7 @@ type CheClusterDevEnvironments struct {
 	// Idle timeout for workspaces in seconds.
 	// This timeout is the duration after which a workspace will be idled if there is no activity.
 	// To disable workspace idling due to inactivity, set this value to -1.
-	// +kubebuilder:default:=1800
+	// +kubebuilder:default:=3600
 	SecondsOfInactivityBeforeIdling *int32 `json:"secondsOfInactivityBeforeIdling,omitempty"`
 	// Run timeout for workspaces in seconds.
 	// This timeout is the maximum duration a workspace runs.
@@ -292,7 +304,7 @@ type CheClusterComponents struct {
 	Dashboard Dashboard `json:"dashboard"`
 	// OpenVSX registry configuration.
 	// +optional
-	// +kubebuilder:default:={enable: false, extensionAutoUpdate: {enable: false, schedule: "0 0 * * 0"}}
+	// +kubebuilder:default:={extensionAutoUpdate: {enable: false, schedule: "0 0 * * 0"}}
 	OpenVSXRegistry OpenVSXRegistry `json:"openVSXRegistry"`
 	// Kubernetes Image Puller configuration.
 	// +optional
@@ -347,23 +359,8 @@ type CheClusterSpecNetworking struct {
 	// +optional
 	// +kubebuilder:default:={gateway: {configLabels: {app: che, component: che-gateway-config}}}
 	Auth Auth `json:"auth"`
-	// NetworkPolicy configures NetworkPolicy resources for the Che namespace
-	// and user workspace namespaces. For OpenShift clusters only.
-	// When enabled, the following policies are created:
-	// In the Che namespace:
-	//   - allow-from-same-namespace: allows ingress traffic between Che pods in the same namespace.
-	//   - allow-from-workspaces: allows ingress traffic from user workspace namespaces.
-	//   - allow-from-openshift-ingress: allows ingress traffic from the OpenShift ingress namespace.
-	//   - allow-from-openshift-monitoring: allows ingress traffic from the OpenShift monitoring namespace.
-	//   - allow-from-<flavor>-operator: allows ingress traffic from the operator pod to Che components.
-	//   - allow-all-egress: allows all egress traffic from Che pods.
-	// In each user workspace namespace:
-	//   - allow-from-<che-namespace>: allows ingress traffic from the Che namespace.
-	//   - allow-from-same-namespace: allows ingress traffic between pods in the same namespace.
-	//   - allow-from-devworkspace-operator: allows ingress traffic from the DevWorkspace operator.
-	//   - allow-from-openshift-monitoring: allows ingress traffic from the OpenShift monitoring namespace.
-	//   - allow-from-openshift-ingress: allows ingress traffic from the OpenShift ingress namespace.
-	//   - allow-all-egress: allows all egress traffic from workspace pods.
+	// NetworkPolicy defines the NetworkPolicies the Operator provisions for Che components,
+	// such as the gateway, the server, the dashboard and the registries.
 	// +optional
 	NetworkPolicy *NetworkPolicy `json:"networkPolicy,omitempty"`
 }
@@ -372,13 +369,62 @@ type DevEnvironmentNetworking struct {
 	// External TLS configuration.
 	// +optional
 	ExternalTLSConfig *ExternalTLSConfig `json:"externalTLSConfig,omitempty"`
+	// NetworkPolicy defines configuration options for the NetworkPolicies provisioned
+	// for each DevWorkspace by the DevWorkspace Operator.
+	//
+	// When enabled and no ingress rules are specified, the Operator sets the default
+	// DevWorkspace Operator ingress rules and adds one custom ingress rule allowing traffic
+	// from Che operands (pods labeled with `app.kubernetes.io/part-of=che.eclipse.org` in the
+	// CheCluster namespace). If custom ingress rules are specified, only those rules apply
+	// and the rule allowing traffic from Che operands is not added automatically; if Che
+	// operands need to communicate with the workspaces, a corresponding ingress rule must be
+	// explicitly included.
+	//
+	// When enabled and no egress rules are specified, the Operator sets the default
+	// DevWorkspace Operator egress rules. If custom egress rules are specified, only
+	// those rules apply.
+	//
+	// When `enabled` is not set here, it falls back to the Che-wide
+	// `spec.networking.networkPolicy.enabled` flag: if that flag is `true`, workspace isolation
+	// is enabled as well. Set `enabled` to `false` explicitly to opt the workspaces out while
+	// keeping the NetworkPolicies for the Che components.
+	// +kubebuilder:validation:Optional
+	NetworkPolicy *controllerv1alpha1.NetworkPolicyConfig `json:"networkPolicy,omitempty"`
 }
 
-// NetworkPolicy configuration settings.
+// NetworkPolicy defines the NetworkPolicies the Operator provisions for Che components,
+// such as the gateway, the server, the dashboard and the registries.
 // +k8s:openapi-gen=true
 type NetworkPolicy struct {
-	// Enabled controls whether the operator creates NetworkPolicy resources.
-	// +optional
+	// Enabled determines whether the NetworkPolicies are provisioned for Eclipse Che.
+	// The policies are created in the namespace where the `CheCluster` custom resource is created
+	// and apply to the pods labeled with `app.kubernetes.io/part-of=che.eclipse.org` only.
+	// Disabled by default. When set to `false`, the NetworkPolicies previously created
+	// by the Operator are removed.
+	//
+	// On OpenShift, the following NetworkPolicies are created in the `CheCluster` namespace:
+	//   - `allow-from-same-namespace`         	: from the Che operands themselves.
+	//   - `allow-from-openshift-ingress`      	: from the OpenShift ingress controller.
+	//   - `allow-from-openshift-host-network` 	: from the pods that use the host network, for example
+	//     the OpenShift router.
+	//   - `allow-from-openshift-monitoring`   	: from the OpenShift monitoring stack, to scrape metrics.
+	//   - `allow-from-workspaces`             	: from the users' workspace namespaces.
+	//   - `allow-from-che-operator`      		: from the Operator pods in the Operator namespace.
+	//   - `allow-all-egress`                  	: allows all egress traffic from the Che operands.
+	//
+	// On Kubernetes, only the `allow-all-ingress` and `allow-all-egress` NetworkPolicies are created,
+	// allowing all ingress and egress traffic, since the namespace of the cluster's ingress controller
+	// is not known to the Operator. Enabling this setting on Kubernetes does not restrict any traffic
+	// by itself: administrators are expected to provision their own NetworkPolicies.
+	//
+	// This setting also drives workspace isolation when `spec.devEnvironments.networking.networkPolicy`
+	// does not define `enabled`: setting this field to `true` additionally enables the NetworkPolicies
+	// that the DevWorkspace Operator provisions for each DevWorkspace. To protect the Che components
+	// without isolating the workspaces, explicitly set
+	// `spec.devEnvironments.networking.networkPolicy.enabled` to `false`.
+	//
+	// +kubebuilder:default:=false
+	// +kubebuilder:validation:Optional
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
@@ -502,8 +548,7 @@ type OpenVSXRegistry struct {
 	// Enables internal OpenVSX registry.
 	// When set to false, the OpenVSX registry resources are deleted, including the database PVC.
 	// +optional
-	// +kubebuilder:default:=false
-	Enable bool `json:"enable,omitempty"`
+	Enable *bool `json:"enable,omitempty"`
 	// The name of the Kubernetes Secret that contains credentials for the OpenVSX registry database and server.
 	// The Secret must contain the following keys:
 	//   - `database-user`				: PostgreSQL username.
@@ -1062,6 +1107,26 @@ type CheClusterGitServices struct {
 	// +optional
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Forgejo"
 	Forgejo []ForgejoService `json:"forgejo,omitempty"`
+	// Configuration for automatically refreshing Git provider OAuth tokens
+	// before they expire, so workspace Git operations don't fail due to
+	// expired tokens. Only tokens obtained through Che's OAuth integration
+	// are refreshed; manually created personal access tokens are not affected.
+	// +optional
+	OauthTokenRefresh *OauthTokenRefresh `json:"oauthTokenRefresh,omitempty"`
+}
+
+// OauthTokenRefresh configures automatic refreshing of OAuth tokens before they expire.
+type OauthTokenRefresh struct {
+	// Enables automatic refreshing of OAuth tokens before they expire.
+	// The default value is `false`.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+	// How often OAuth tokens are checked and refreshed, in seconds.
+	// The default value is `600`.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:ExclusiveMinimum=true
+	PeriodSec *int32 `json:"periodSec,omitempty"`
 }
 
 // GitHubService enables users to work with repositories hosted on GitHub (GitHub.com or GitHub Enterprise).
@@ -1204,6 +1269,15 @@ const (
 	ClusterPhaseInactive        = "Inactive"
 	ClusterPhasePendingDeletion = "PendingDeletion"
 	RollingUpdate               = "RollingUpdate"
+)
+
+const (
+	// InstallOrUpdateFailed is the Reason indicating that the reconciliation failed
+	// and the installation or update is not completed.
+	InstallOrUpdateFailed = "InstallOrUpdateFailed"
+	// InstallOrUpdateRetrying is the Reason indicating that the reconciliation failed
+	// with a retryable error and will be requeued.
+	InstallOrUpdateRetrying = "InstallOrUpdateRetrying"
 )
 
 // CheClusterStatus defines the observed state of Che installation.
@@ -1384,7 +1458,7 @@ func (c *CheCluster) IsExternalOpenVSXRegistryEnabled() bool {
 }
 
 func (c *CheCluster) IsInternalOpenVSXRegistryEnabled() bool {
-	return c.Spec.Components.OpenVSXRegistry.Enable
+	return ptr.Deref(c.Spec.Components.OpenVSXRegistry.Enable, defaults.GetOpenVSXRegistryEnabled() == "true")
 }
 
 func (c *CheCluster) IsExtensionAutoUpdateEnabled() bool {
@@ -1416,8 +1490,14 @@ func (c *CheCluster) IsDevEnvironmentExternalTLSConfigEnabled() bool {
 }
 
 func (c *CheCluster) IsNetworkPoliciesEnabled() bool {
-	return c.Spec.Networking.NetworkPolicy != nil &&
-		ptr.Deref(c.Spec.Networking.NetworkPolicy.Enabled, constants.NetworkPolicyEnabled)
+	if c.Spec.Networking.NetworkPolicy == nil {
+		return constants.DefaultNetworkPolicyEnabled
+	}
+
+	return ptr.Deref(
+		c.Spec.Networking.NetworkPolicy.Enabled,
+		constants.DefaultNetworkPolicyEnabled,
+	)
 }
 
 func (c *CheCluster) IsOAuthProxyImageResolutionFromImageStreamEnabled() bool {

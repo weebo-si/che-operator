@@ -1,0 +1,406 @@
+//
+// Copyright (c) 2019-2026 Red Hat, Inc.
+// This program and the accompanying materials are made
+// available under the terms of the Eclipse Public License 2.0
+// which is available at https://www.eclipse.org/legal/epl-2.0/
+//
+// SPDX-License-Identifier: EPL-2.0
+//
+// Contributors:
+//   Red Hat, Inc. - initial API and implementation
+//
+
+package clientwrapper
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+
+	"github.com/eclipse-che/che-operator/pkg/common/utils"
+	"github.com/google/go-cmp/cmp"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var (
+	logger = ctrl.Log.WithName("k8s")
+)
+
+func New(cli client.Client, scheme *runtime.Scheme) *K8sClientWrapper {
+	return &K8sClientWrapper{cli: cli, scheme: scheme}
+}
+
+type K8sClientWrapper struct {
+	cli    client.Client
+	scheme *runtime.Scheme
+}
+
+func (k K8sClientWrapper) Sync(
+	ctx context.Context,
+	obj client.Object,
+	opts ...SyncOption,
+) error {
+	defer func() {
+		// ensure GVK is set (for original object) when function returns
+		_ = k.ensureGVK(obj)
+	}()
+
+	if err := k.ensureGVK(obj); err != nil {
+		return err
+	}
+
+	actual, err := k.scheme.New(obj.GetObjectKind().GroupVersionKind())
+	if err != nil {
+		return err
+	}
+
+	key := client.ObjectKeyFromObject(obj)
+	if exists, err := k.doGetIgnoreNotFound(ctx, key, actual.(client.Object)); exists {
+		return k.doSync(ctx, actual.(client.Object), obj, opts...)
+	} else if err == nil {
+		return k.doSync(ctx, nil, obj, opts...)
+	} else {
+		return err
+	}
+}
+
+func (k K8sClientWrapper) SyncStatus(
+	ctx context.Context,
+	obj client.Object,
+	opts ...SyncOption,
+) error {
+	defer func() {
+		// ensure GVK is set (for original object) when function returns
+		_ = k.ensureGVK(obj)
+	}()
+
+	if err := k.ensureGVK(obj); err != nil {
+		return err
+	}
+
+	actual, err := k.scheme.New(obj.GetObjectKind().GroupVersionKind())
+	if err != nil {
+		return err
+	}
+
+	key := client.ObjectKeyFromObject(obj)
+	if err := k.doGet(ctx, key, actual.(client.Object)); err == nil {
+		return k.doSyncStatus(ctx, actual.(client.Object), obj, opts...)
+	} else {
+		return err
+	}
+}
+
+func (k K8sClientWrapper) CreateIfNotExists(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.CreateOption,
+) error {
+	defer func() {
+		// ensure GVK is set (for original object) when function returns
+		_ = k.ensureGVK(obj)
+	}()
+
+	if err := k.ensureGVK(obj); err != nil {
+		return err
+	}
+	return k.doCreate(ctx, obj, true, opts...)
+}
+
+func (k K8sClientWrapper) Create(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.CreateOption,
+) error {
+	defer func() {
+		// ensure GVK is set (for original object) when function returns
+		_ = k.ensureGVK(obj)
+	}()
+
+	if err := k.ensureGVK(obj); err != nil {
+		return err
+	}
+	return k.doCreate(ctx, obj, false, opts...)
+}
+
+func (k K8sClientWrapper) GetIgnoreNotFound(
+	ctx context.Context,
+	key client.ObjectKey,
+	objectMeta client.Object,
+	opts ...client.GetOption,
+) (bool, error) {
+	return k.doGetIgnoreNotFound(ctx, key, objectMeta, opts...)
+}
+
+func (k K8sClientWrapper) DeleteByKeyIgnoreNotFound(
+	ctx context.Context,
+	key client.ObjectKey,
+	objectMeta client.Object,
+	opts ...client.DeleteOption,
+) error {
+	return k.deleteByKeyIgnoreNotFound(ctx, key, objectMeta, opts...)
+}
+
+func (k K8sClientWrapper) DeleteAllOf(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.DeleteAllOfOption,
+) error {
+	return k.cli.DeleteAllOf(ctx, obj, opts...)
+}
+
+func (k K8sClientWrapper) DeleteIgnoreNotFound(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.DeleteOption,
+) error {
+	if err := k.ensureGVK(obj); err != nil {
+		return err
+	}
+	return k.doDeleteIgnoreIfNotFound(ctx, obj, opts...)
+}
+
+func (k K8sClientWrapper) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) ([]runtime.Object, error) {
+	err := k.cli.List(ctx, list, opts...)
+	if err != nil {
+		return []runtime.Object{}, err
+	}
+
+	items, err := meta.ExtractList(list)
+	if err != nil {
+		return []runtime.Object{}, err
+	}
+
+	for i := range items {
+		if err = k.ensureGVK(items[i].(client.Object)); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+// deleteByKeyIgnoreNotFound deletes object.
+// Returns nil if object is deleted or not found otherwise returns error.
+func (k K8sClientWrapper) deleteByKeyIgnoreNotFound(
+	ctx context.Context,
+	key client.ObjectKey,
+	objectMeta client.Object,
+	opts ...client.DeleteOption,
+) error {
+	runtimeObject, ok := objectMeta.(runtime.Object)
+	if !ok {
+		return fmt.Errorf("object %T is not a runtime.Object", runtimeObject)
+	}
+
+	actual := runtimeObject.DeepCopyObject().(client.Object)
+	if exists, err := k.doGetIgnoreNotFound(ctx, key, actual); exists {
+		return k.doDeleteIgnoreIfNotFound(ctx, actual, opts...)
+	} else {
+		return err
+	}
+}
+
+// doDeleteIgnoreIfNotFound deletes object.
+// Returns nil if object is deleted or not found otherwise returns error.
+func (k K8sClientWrapper) doDeleteIgnoreIfNotFound(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.DeleteOption,
+) error {
+	if err := k.cli.Delete(ctx, obj, opts...); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Object already deleted", "kind", GetObjectType(obj), "namespace", obj.GetNamespace(), "name", obj.GetName())
+			return nil
+		}
+		return err
+	}
+
+	logger.Info("Object deleted", "kind", GetObjectType(obj), "namespace", obj.GetNamespace(), "name", obj.GetName())
+	return nil
+}
+
+// doGetIgnoreNotFound gets object.
+// Returns true if object exists otherwise returns false.
+// Returns nil if object is retrieved or not found otherwise returns error.
+func (k K8sClientWrapper) doGetIgnoreNotFound(
+	ctx context.Context,
+	key client.ObjectKey,
+	obj client.Object,
+	opts ...client.GetOption,
+) (bool, error) {
+	if err := k.cli.Get(ctx, key, obj, opts...); err == nil {
+		if err = k.ensureGVK(obj); err != nil {
+			return false, err
+		}
+		return true, nil
+	} else {
+		return false, client.IgnoreNotFound(err)
+	}
+}
+
+// doGet gets object.
+// Returns nil if object is retrieved otherwise returns error.
+func (k K8sClientWrapper) doGet(
+	ctx context.Context,
+	key client.ObjectKey,
+	obj client.Object,
+	opts ...client.GetOption,
+) error {
+	if err := k.cli.Get(ctx, key, obj, opts...); err == nil {
+		if err = k.ensureGVK(obj); err != nil {
+			return err
+		}
+		return nil
+	} else {
+		return err
+	}
+}
+
+// doCreate creates object.
+// Returns nil if object is created otherwise returns error.
+func (k K8sClientWrapper) doCreate(
+	ctx context.Context,
+	obj client.Object,
+	ignoreIfAlreadyExists bool,
+	opts ...client.CreateOption,
+) error {
+	if err := k.cli.Create(ctx, obj, opts...); err == nil {
+		logger.Info("Object created", "kind", GetObjectType(obj), "namespace", obj.GetNamespace(), "name", obj.GetName())
+		return nil
+	} else if ignoreIfAlreadyExists {
+		return client.IgnoreAlreadyExists(err)
+	} else {
+		return err
+	}
+}
+
+// doSync ensures that the object is up to date in the cluster.
+// Returns nil if object is in sync.
+func (k K8sClientWrapper) doSync(
+	ctx context.Context,
+	actual client.Object,
+	obj client.Object,
+	opts ...SyncOption,
+) error {
+	if actual == nil {
+		return k.doCreate(ctx, obj, false)
+	}
+
+	syncOptions := SyncOptions{}
+	syncOptions.ApplyOptions(opts)
+
+	diff := cmp.Diff(actual, obj, syncOptions.DiffOpts...)
+	if len(diff) > 0 {
+		// don't print difference if there are no DiffOpts mainly to avoid huge output
+		if !syncOptions.SuppressDiff && len(syncOptions.DiffOpts) != 0 {
+			logger.Info(fmt.Sprintf("Difference:\n%s", diff))
+		}
+
+		if syncOptions.ForceRecreate || k.isRecreate(actual.GetObjectKind().GroupVersionKind().Kind) {
+			if err := k.doDeleteIgnoreIfNotFound(ctx, actual, syncOptions.DeleteOpts...); err != nil {
+				return err
+			}
+
+			return k.doCreate(ctx, obj, false)
+		} else {
+			// 'obj' already carries a resourceVersion: either it was set when the object
+			// was fetched, or it was refreshed by the API server response of a previous
+			// update (controller-runtime decodes the response back into the object).
+			// 'actual' comes from the informer cache, which may lag behind our own
+			// writes — overwriting 'obj' with a stale RV causes conflicts.
+			if obj.GetResourceVersion() == "" {
+				obj.SetResourceVersion(actual.GetResourceVersion())
+			}
+			mergeMetadata(syncOptions, obj, actual)
+
+			err := k.cli.Update(ctx, obj)
+			if err == nil {
+				logger.Info("Object updated", "kind", GetObjectType(actual), "namespace", actual.GetNamespace(), "name", actual.GetName())
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (k K8sClientWrapper) doSyncStatus(
+	ctx context.Context,
+	actual client.Object,
+	obj client.Object,
+	opts ...SyncOption,
+) error {
+	syncOptions := SyncOptions{}
+	syncOptions.ApplyOptions(opts)
+
+	diff := cmp.Diff(actual, obj, syncOptions.DiffOpts...)
+	if len(diff) > 0 {
+		// don't print difference if there are no DiffOpts mainly to avoid huge output
+		if !syncOptions.SuppressDiff && len(syncOptions.DiffOpts) != 0 {
+			logger.Info(fmt.Sprintf("Difference:\n%s", diff))
+		}
+
+		// 'obj' already carries a resourceVersion: either it was set when the object
+		// was fetched, or it was refreshed by the API server response of a previous
+		// update (controller-runtime decodes the response back into the object).
+		// 'actual' comes from the informer cache, which may lag behind our own
+		// writes — overwriting 'obj' with a stale RV causes conflicts.
+		if obj.(metav1.Object).GetResourceVersion() == "" {
+			obj.(metav1.Object).SetResourceVersion(actual.GetResourceVersion())
+		}
+
+		err := k.cli.Status().Update(ctx, obj)
+		if err == nil {
+			logger.Info("Object updated", "kind", GetObjectType(actual), "namespace", actual.GetNamespace(), "name", actual.GetName())
+		}
+		return err
+	}
+
+	return nil
+}
+
+func mergeMetadata(syncOptions SyncOptions, obj client.Object, actual client.Object) {
+	if syncOptions.MergeLabels {
+		obj.SetLabels(utils.MergeMapsMissingKeys(obj.GetLabels(), actual.GetLabels()))
+	}
+
+	if syncOptions.MergeAnnotations {
+		obj.SetAnnotations(utils.MergeMapsMissingKeys(obj.GetAnnotations(), actual.GetAnnotations()))
+	}
+
+	if syncOptions.PreserveFinalizers {
+		obj.SetFinalizers(actual.GetFinalizers())
+	}
+}
+
+// isRecreate returns true, if object should be deleted/created instead of being updated.
+func (k K8sClientWrapper) isRecreate(kind string) bool {
+	return kind == "Service" || kind == "Ingress" || kind == "Route" || kind == "Job"
+}
+
+func (k K8sClientWrapper) ensureGVK(obj client.Object) error {
+	gvk, err := apiutil.GVKForObject(obj, k.scheme)
+	if err != nil {
+		return err
+	}
+
+	obj.GetObjectKind().SetGroupVersionKind(gvk)
+	return nil
+}
+
+func GetObjectType(obj interface{}) string {
+	objType := reflect.TypeOf(obj).String()
+	if reflect.TypeOf(obj).Kind().String() == "ptr" {
+		objType = objType[1:]
+	}
+
+	return objType
+}
